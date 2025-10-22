@@ -41,10 +41,14 @@ class EpisodicBuffer:
     def read(self, query: torch.Tensor, k: int = 5) -> Tuple[torch.Tensor, torch.Tensor]:
         if query.ndim != 2:
             raise ValueError("query must be shape [batch, key_dim]")
+        target_device = query.device
         distances, indices = self.index.search(query.detach().cpu().numpy(), k)
-        retrieved = [self.values.get(idx, torch.zeros_like(query[0])) for idx in indices.flatten()]
-        values = torch.stack(retrieved).view(query.shape[0], k, -1)
-        return torch.from_numpy(distances), values
+        fallback = torch.zeros_like(query[0]).cpu()
+        retrieved_cpu = [self.values.get(idx, fallback) for idx in indices.flatten()]
+        stacked_cpu = torch.stack(retrieved_cpu).view(query.shape[0], k, -1)
+        values = stacked_cpu.to(target_device)
+        distances_tensor = torch.from_numpy(distances).to(target_device)
+        return distances_tensor, values
 
     def _evict_oldest(self) -> None:
         oldest_idx = min(self.values)
