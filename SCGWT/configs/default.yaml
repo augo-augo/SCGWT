@@ -15,7 +15,7 @@ decoder:
 
 dynamics:
   latent_dim: 64
-  action_dim: 8
+  action_dim: 17
   hidden_dim: 256
 
 workspace:
@@ -41,7 +41,7 @@ reward:
 
 empowerment:
   latent_dim: 64
-  action_dim: 8
+  action_dim: 17
   hidden_dim: 256
   queue_capacity: 256
   temperature: 0.1

@@ -40,7 +40,7 @@ Immediate next steps:
 - Swapped in a slot-attention encoder with configurable CNN backbone and iterative slots.
 - Added an InfoNCE empowerment estimator with a latent replay queue and config-driven hyperparameters.
 - Added `docs/CONFIGURATION.md` documenting configuration usage and override patterns.
-- Wired the MiniGrid playpen runner (`scgwt/training/__main__.py`) into Weights & Biases with per-step vitals, optimizer diagnostics, and episode video logging for experiment tracking.
+- Wired the Crafter survival runner (`scgwt/training/__main__.py`) into Weights & Biases with per-step vitals, optimizer diagnostics, and episode video logging for experiment tracking.
 - Hardened early training stability with intrinsic-reward normalization and mixed-precision optimisation (reward clipping + AMP with grad scaling) to pre-empt NaN or OOM failures.
 - Introduced an exploration bonus term derived from ensemble disagreement to encourage broader search without destabilising competence/empowerment balances.
 

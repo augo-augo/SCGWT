@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
-import gymnasium as gym
-import minigrid  # registers MiniGrid envs with Gymnasium
+import crafter
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -14,16 +13,6 @@ from omegaconf import OmegaConf
 
 from scgwt.config import load_training_config
 from scgwt.training import TrainingLoop
-
-
-def _get_visual_frame(env: gym.Env, observation: object) -> np.ndarray:
-    frame = env.render()
-    if frame is None:
-        if isinstance(observation, dict):
-            frame = observation.get("rgb") or observation.get("image")
-        if frame is None:
-            frame = observation
-    return np.asarray(frame)
 
 
 def _frame_to_chw(frame: np.ndarray) -> np.ndarray:
@@ -62,22 +51,31 @@ def _preprocess_frame(frame: np.ndarray, target_shape: Tuple[int, int, int]) -> 
     return tensor.clamp(0.0, 1.0)
 
 
-def _compute_self_state(env: gym.Env, step_count: int, horizon: int) -> torch.Tensor:
+def _compute_self_state(
+    info: dict | None, step_count: int, horizon: int, state_dim: int
+) -> torch.Tensor:
+    """Derive self-centric signals from Crafter status fields."""
+    if state_dim <= 0:
+        return torch.empty(0, dtype=torch.float32)
+
+    if info is None:
+        info = {}
+
+    health = float(info.get("health", 9.0))
+    food = float(info.get("food", 9.0))
+    health_norm = np.clip(health / 9.0, 0.0, 1.0)
+    food_norm = np.clip(food / 9.0, 0.0, 1.0)
+
     denom = max(1, horizon)
     energy = max(0.0, 1.0 - step_count / denom)
-    goal_progress = 0.0
-    agent_pos = getattr(env, "agent_pos", None)
-    goal_pos = getattr(env, "goal_pos", None)
-    if agent_pos is not None and goal_pos is not None:
-        agent = np.asarray(agent_pos, dtype=np.float32)
-        goal = np.asarray(goal_pos, dtype=np.float32)
-        extent = float(getattr(env, "width", 1) + getattr(env, "height", 1))
-        if extent <= 0:
-            extent = float(np.abs(goal - agent).sum() + 1.0)
-        dist = float(np.abs(agent - goal).sum())
-        goal_progress = 1.0 - dist / max(1.0, extent)
-        goal_progress = float(np.clip(goal_progress, 0.0, 1.0))
-    return torch.tensor([energy, goal_progress], dtype=torch.float32)
+    is_sleeping = float(info.get("is_sleeping", 0.0))
+
+    features: List[float] = [health_norm, food_norm, energy, is_sleeping]
+    if state_dim <= len(features):
+        selected = features[:state_dim]
+    else:
+        selected = features + [0.0] * (state_dim - len(features))
+    return torch.tensor(selected, dtype=torch.float32)
 
 
 def _select_env_action(action_tensor: torch.Tensor, action_space_n: int) -> int:
@@ -90,7 +88,7 @@ def _select_env_action(action_tensor: torch.Tensor, action_space_n: int) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SC-GWT training harness (MiniGrid integration)")
+    parser = argparse.ArgumentParser(description="SC-GWT training harness (Crafter integration)")
     parser.add_argument(
         "--config",
         type=Path,
@@ -104,11 +102,6 @@ def main() -> None:
         help="Override configuration values (OmegaConf dotlist syntax).",
     )
     parser.add_argument("--device", default=None, help="Runtime device override.")
-    parser.add_argument(
-        "--env-id",
-        default="MiniGrid-Empty-6x6-v0",
-        help="Gymnasium environment identifier to launch.",
-    )
     parser.add_argument("--seed", type=int, default=0, help="Environment reset seed.")
     parser.add_argument(
         "--max-steps", type=int, default=5000, help="Total environment steps to execute."
@@ -131,22 +124,24 @@ def main() -> None:
         raw_cfg.device = args.device
 
     wandb.init(
-        project="scgwt-minigrid",
+        project="scgwt-crafter",
         config=OmegaConf.to_container(raw_cfg, resolve=True),
-        name=f"{args.env_id}_seed{args.seed}",
+        name=f"crafter_seed{args.seed}",
     )
 
     loop = TrainingLoop(config)
-    env = gym.make(args.env_id, render_mode="rgb_array")
+    env = crafter.Env()
     total_steps = 0
     episode = 0
     episode_steps = 0
-    episode_horizon = int(getattr(env, "max_steps", args.max_steps))
+    episode_horizon = args.max_steps
 
-    observation, _info = env.reset(seed=args.seed)
-    frame = _get_visual_frame(env, observation)
+    observation = env.reset(seed=args.seed)
+    frame = observation
     observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape)
-    self_state_vec = _compute_self_state(env, episode_steps, episode_horizon).unsqueeze(0)
+    self_state_vec = _compute_self_state(
+        info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
+    ).unsqueeze(0)
     episode_frames = [_frame_to_chw(frame)]
 
     try:
@@ -158,9 +153,9 @@ def main() -> None:
                     train=False,
                 )
             env_action = _select_env_action(policy_result.action, env.action_space.n)
-            next_observation, _reward, terminated, truncated, info = env.step(env_action)
-            next_frame = _get_visual_frame(env, next_observation)
-            next_tensor = _preprocess_frame(next_frame, config.encoder.observation_shape)
+            next_observation, env_reward, terminated, info = env.step(env_action)
+            truncated = False
+            next_tensor = _preprocess_frame(next_observation, config.encoder.observation_shape)
             training_result = loop.step(
                 observation_tensor,
                 action=policy_result.action,
@@ -168,10 +163,16 @@ def main() -> None:
                 self_state=self_state_vec,
                 train=True,
             )
-            episode_frames.append(_frame_to_chw(next_frame))
+            episode_frames.append(_frame_to_chw(next_observation))
 
             next_total_steps = total_steps + 1
             next_episode_steps = episode_steps + 1
+            next_self_state_vec = _compute_self_state(
+                info,
+                next_episode_steps,
+                episode_horizon,
+                config.self_state_dim,
+            ).unsqueeze(0)
 
             step_metrics = {
                 "step/total_steps": next_total_steps,
@@ -180,6 +181,7 @@ def main() -> None:
                 "step/intrinsic_reward": float(policy_result.intrinsic_reward.mean().item()),
                 "step/observation_entropy": float(policy_result.observation_entropy.mean().item()),
                 "step/avg_slot_novelty": float(policy_result.novelty.mean().item()),
+                "step/env_reward": float(env_reward),
             }
             if policy_result.reward_components is not None:
                 step_metrics.update(
@@ -198,12 +200,11 @@ def main() -> None:
                         ),
                     }
                 )
-            step_metrics.update(
-                {
-                    "self_state/energy": float(self_state_vec[0, 0].item()),
-                    "self_state/goal_progress": float(self_state_vec[0, 1].item()),
-                }
-            )
+            state_names = ["health", "food", "energy", "sleep"]
+            if next_self_state_vec.numel() > 0:
+                for idx in range(next_self_state_vec.shape[1]):
+                    name = state_names[idx] if idx < len(state_names) else f"feature_{idx}"
+                    step_metrics[f"self_state/{name}"] = float(next_self_state_vec[0, idx].item())
             wandb.log(step_metrics, step=next_total_steps)
 
             if training_result.training_metrics is not None:
@@ -226,8 +227,8 @@ def main() -> None:
             observation_tensor = next_tensor
             total_steps = next_total_steps
             episode_steps = next_episode_steps
-            self_state_vec = _compute_self_state(env, episode_steps, episode_horizon).unsqueeze(0)
-            frame = next_frame
+            self_state_vec = next_self_state_vec
+            frame = next_observation
 
             if terminated or truncated:
                 if episode_frames:
@@ -244,11 +245,13 @@ def main() -> None:
                     )
                 episode += 1
                 episode_steps = 0
-                observation, _info = env.reset()
-                frame = _get_visual_frame(env, observation)
+                observation = env.reset()
+                frame = observation
                 observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape)
-                episode_horizon = int(getattr(env, "max_steps", args.max_steps))
-                self_state_vec = _compute_self_state(env, episode_steps, episode_horizon).unsqueeze(0)
+                episode_horizon = args.max_steps
+                self_state_vec = _compute_self_state(
+                    info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
+                ).unsqueeze(0)
                 episode_frames = [_frame_to_chw(frame)]
                 print(f"Episode {episode} reset (info: {info})")
 
