@@ -49,8 +49,8 @@ empowerment:
 episodic_memory:
   capacity: 1000
   key_dim: 64
-rollout_capacity: 2048
-batch_size: 64
+rollout_capacity: 4096
+batch_size: 128
 optimizer_lr: 0.001
 optimizer_empowerment_weight: 0.05
 actor:
@@ -64,7 +64,7 @@ critic:
   dropout: 0.05
 
 self_state_dim: 2
-dream_horizon: 5
+dream_horizon: 12
 discount_gamma: 0.99
 gae_lambda: 0.95
 entropy_coef: 0.01

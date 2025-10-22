@@ -225,7 +225,7 @@ class TrainingLoop:
         and record the transition. When `train=True` and `next_observation` is supplied,
         the optimizer performs a Stable Dreaming update once enough rollouts are stored.
         """
-        observation = observation.to(self.device)
+        observation = observation.to(self.device, non_blocking=True)
         batch = observation.size(0)
         state_tensor: torch.Tensor | None
         if self.self_state_dim > 0:
@@ -237,7 +237,7 @@ class TrainingLoop:
                     dtype=observation.dtype,
                 )
             else:
-                state_tensor = self_state.to(self.device)
+                state_tensor = self_state.to(self.device, non_blocking=True)
                 if state_tensor.ndim == 1:
                     state_tensor = state_tensor.unsqueeze(0)
                 if state_tensor.size(0) != batch:
@@ -256,7 +256,7 @@ class TrainingLoop:
                 latents = self.world_model(observation)
                 memory_context = self._get_memory_context(latents["z_self"])
                 if action is not None:
-                    action_for_routing = action.to(self.device)
+                    action_for_routing = action.to(self.device, non_blocking=True)
                 else:
                     action_for_routing = torch.zeros(
                         batch, self.config.dynamics.action_dim, device=self.device
@@ -293,7 +293,7 @@ class TrainingLoop:
                     )
                     features = self._assemble_features(latents["z_self"], broadcast, memory_context)
                 else:
-                    action = action.to(self.device)
+                    action = action.to(self.device, non_blocking=True)
 
                 latent_state = broadcast.mean(dim=1)
                 predictions = self.world_model.predict_next_latents(latent_state, action)
@@ -322,10 +322,20 @@ class TrainingLoop:
         train_loss: float | None = None
         training_metrics: dict[str, float] | None = None
         if train and next_observation is not None:
-            obs_cpu = observation.detach().cpu()
-            act_cpu = action.detach().cpu()
-            next_cpu = next_observation.detach().cpu()
-            state_cpu = state_tensor.detach().cpu() if state_tensor is not None else None
+            obs_cpu = observation.detach().to("cpu", non_blocking=True).contiguous()
+            act_cpu = action.detach().to("cpu", non_blocking=True).contiguous()
+            next_cpu = next_observation.detach().to("cpu", non_blocking=True).contiguous()
+            state_cpu = (
+                state_tensor.detach().to("cpu", non_blocking=True).contiguous()
+                if state_tensor is not None
+                else None
+            )
+            if torch.cuda.is_available():
+                obs_cpu = obs_cpu.pin_memory()
+                act_cpu = act_cpu.pin_memory()
+                next_cpu = next_cpu.pin_memory()
+                if state_cpu is not None:
+                    state_cpu = state_cpu.pin_memory()
             batch_items = obs_cpu.shape[0]
             for idx in range(batch_items):
                 self.rollout_buffer.push(
@@ -398,7 +408,7 @@ class TrainingLoop:
             and self.self_state_dim > 0
         ):
             projected_state = self.self_state_encoder(
-                self_state.to(self.device)
+                self_state.to(self.device, non_blocking=True)
             )
             projected_state = torch.nn.functional.normalize(projected_state, dim=-1)
             state_similarity = (
@@ -465,11 +475,11 @@ class TrainingLoop:
         observations, actions, next_observations, self_states = self.rollout_buffer.sample(
             self.batch_size
         )
-        observations = observations.to(self.device)
-        actions = actions.to(self.device)
-        next_observations = next_observations.to(self.device)
+        observations = observations.to(self.device, non_blocking=True)
+        actions = actions.to(self.device, non_blocking=True)
+        next_observations = next_observations.to(self.device, non_blocking=True)
         if self_states is not None:
-            self_states = self_states.to(self.device)
+            self_states = self_states.to(self.device, non_blocking=True)
 
         self.optimizer.zero_grad(set_to_none=True)
 

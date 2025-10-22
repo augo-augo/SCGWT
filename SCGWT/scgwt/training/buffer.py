@@ -45,10 +45,19 @@ class RolloutBuffer:
             if any(state is None for state in self_states):
                 raise ValueError("Inconsistent self_state entries in rollout buffer")
             state_tensor = torch.stack(self_states)
+        obs_tensor = torch.stack(observations)
+        act_tensor = torch.stack(actions)
+        next_tensor = torch.stack(next_observations)
+        if torch.cuda.is_available():
+            obs_tensor = obs_tensor.pin_memory()
+            act_tensor = act_tensor.pin_memory()
+            next_tensor = next_tensor.pin_memory()
+            if state_tensor is not None:
+                state_tensor = state_tensor.pin_memory()
         return (
-            torch.stack(observations),
-            torch.stack(actions),
-            torch.stack(next_observations),
+            obs_tensor,
+            act_tensor,
+            next_tensor,
             state_tensor,
         )
 

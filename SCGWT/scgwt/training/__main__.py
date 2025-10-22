@@ -26,17 +26,20 @@ def _frame_to_chw(frame: np.ndarray) -> np.ndarray:
     return array.transpose(2, 0, 1)
 
 
-def _preprocess_frame(frame: np.ndarray, target_shape: Tuple[int, int, int]) -> torch.Tensor:
+def _preprocess_frame(
+    frame: np.ndarray, target_shape: Tuple[int, int, int], device: torch.device
+) -> torch.Tensor:
     array = np.asarray(frame)
     if array.ndim == 2:
         array = np.expand_dims(array, -1)
-    if array.shape[-1] == target_shape[0]:
-        tensor = torch.from_numpy(array).permute(2, 0, 1)
-    elif array.shape[0] == target_shape[0]:
-        tensor = torch.from_numpy(array)
-    else:
-        raise ValueError(f"Incompatible observation shape {array.shape} for expected {target_shape}")
-    tensor = tensor.float()
+    tensor = torch.from_numpy(array)
+    if tensor.ndim != 3:
+        raise ValueError(f"Observation must be [H, W, C] or [C, H, W], got {tensor.shape}")
+    if tensor.shape[-1] == target_shape[0]:
+        tensor = tensor.permute(2, 0, 1)
+    elif tensor.shape[0] != target_shape[0]:
+        raise ValueError(f"Incompatible observation shape {tensor.shape} for expected {target_shape}")
+    tensor = tensor.to(device=device, dtype=torch.float32, non_blocking=True)
     if tensor.max() > 1.0:
         tensor = tensor / 255.0
     tensor = tensor.unsqueeze(0)
@@ -123,6 +126,8 @@ def main() -> None:
         config.device = args.device
         raw_cfg.device = args.device
 
+    runtime_device = torch.device(config.device)
+
     wandb.init(
         project="scgwt-crafter",
         config=OmegaConf.to_container(raw_cfg, resolve=True),
@@ -138,10 +143,10 @@ def main() -> None:
 
     observation = env.reset()
     frame = observation
-    observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape)
+    observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape, runtime_device)
     self_state_vec = _compute_self_state(
         info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
-    ).unsqueeze(0)
+    ).unsqueeze(0).to(runtime_device)
     episode_frames = [_frame_to_chw(frame)]
 
     try:
@@ -155,7 +160,7 @@ def main() -> None:
             env_action = _select_env_action(policy_result.action, env.action_space.n)
             next_observation, env_reward, terminated, info = env.step(env_action)
             truncated = False
-            next_tensor = _preprocess_frame(next_observation, config.encoder.observation_shape)
+            next_tensor = _preprocess_frame(next_observation, config.encoder.observation_shape, runtime_device)
             training_result = loop.step(
                 observation_tensor,
                 action=policy_result.action,
@@ -172,7 +177,7 @@ def main() -> None:
                 next_episode_steps,
                 episode_horizon,
                 config.self_state_dim,
-            ).unsqueeze(0)
+            ).unsqueeze(0).to(runtime_device)
 
             step_metrics = {
                 "step/total_steps": next_total_steps,
@@ -183,6 +188,13 @@ def main() -> None:
                 "step/avg_slot_novelty": float(policy_result.novelty.mean().item()),
                 "step/env_reward": float(env_reward),
             }
+            if isinstance(info, dict):
+                player_stats = ["health", "food", "drink", "energy"]
+                for stat in player_stats:
+                    if stat in info:
+                        step_metrics[f"crafter_stats/{stat}"] = float(info[stat])
+                if isinstance(info.get("achievements"), dict):
+                    step_metrics["crafter_stats/achievements_unlocked"] = len(info["achievements"])
             if policy_result.reward_components is not None:
                 step_metrics.update(
                     {
@@ -200,7 +212,7 @@ def main() -> None:
                         ),
                     }
                 )
-            state_names = ["health", "food", "energy", "sleep"]
+            state_names = ["health_norm", "food_norm", "energy_step", "is_sleeping"]
             if next_self_state_vec.numel() > 0:
                 for idx in range(next_self_state_vec.shape[1]):
                     name = state_names[idx] if idx < len(state_names) else f"feature_{idx}"
@@ -245,13 +257,18 @@ def main() -> None:
                     )
                 episode += 1
                 episode_steps = 0
+                if isinstance(info, dict) and isinstance(info.get("achievements"), dict):
+                    wandb.log(
+                        {"episode/final_achievements": len(info["achievements"])},
+                        step=next_total_steps,
+                    )
                 observation = env.reset()
                 frame = observation
-                observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape)
+                observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape, runtime_device)
                 episode_horizon = args.max_steps
                 self_state_vec = _compute_self_state(
                     info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
-                ).unsqueeze(0)
+                ).unsqueeze(0).to(runtime_device)
                 episode_frames = [_frame_to_chw(frame)]
                 print(f"Episode {episode} reset (info: {info})")
 
