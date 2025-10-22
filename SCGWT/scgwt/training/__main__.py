@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Tuple
 
 import gymnasium as gym
+import minigrid  # registers MiniGrid envs with Gymnasium
 import numpy as np
 import torch
 import torch.nn.functional as F
