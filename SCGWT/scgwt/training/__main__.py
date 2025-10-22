@@ -193,6 +193,9 @@ def main() -> None:
                         "step/reward_safety": float(
                             policy_result.reward_components["safety"].mean().item()
                         ),
+                        "step/reward_explore": float(
+                            policy_result.reward_components["explore"].mean().item()
+                        ),
                     }
                 )
             step_metrics.update(

@@ -33,6 +33,7 @@ def test_stable_dreaming_outputs_are_finite() -> None:
         assert loss.ndim == 0
         assert torch.isfinite(loss)
     assert isinstance(metrics, dict)
+    assert "dream/explore" in metrics
     for value in metrics.values():
         assert torch.isfinite(value).all()
 
@@ -54,6 +55,7 @@ def test_optimize_backpropagates_to_all_modules() -> None:
     metrics = loop._optimize()
     assert metrics is not None
     assert "train/total_loss" in metrics
+    assert "dream/explore" in metrics
     for value in metrics.values():
         assert math.isfinite(float(value))
 

@@ -18,6 +18,7 @@ class IntrinsicRewardConfig:
     lambda_comp: float
     lambda_emp: float
     lambda_safety: float
+    lambda_explore: float = 0.0
 
 
 class IntrinsicRewardGenerator:
@@ -65,20 +66,24 @@ class IntrinsicRewardGenerator:
         action: torch.Tensor,
         latent: torch.Tensor,
         return_components: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         r_comp = self.get_competence(novelty)
         r_emp = self.empowerment_estimator(action, latent)
         r_safe = self.get_safety(observation_entropy)
+        r_explore = novelty.detach()
         batch = action.shape[0]
         if r_comp.ndim == 0:
             r_comp = r_comp.expand(batch)
         if r_safe.ndim == 0:
             r_safe = r_safe.expand(batch)
+        if r_explore.ndim == 0:
+            r_explore = r_explore.expand(batch)
         intrinsic = (
             self.config.lambda_comp * r_comp
             + self.config.lambda_emp * r_emp
             + self.config.lambda_safety * r_safe
+            + self.config.lambda_explore * r_explore
         )
         if return_components:
-            return intrinsic, r_comp, r_emp, r_safe
+            return intrinsic, r_comp, r_emp, r_safe, r_explore
         return intrinsic

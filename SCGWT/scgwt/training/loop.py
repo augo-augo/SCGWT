@@ -300,7 +300,13 @@ class TrainingLoop:
                 decoded = self.world_model.decode_predictions(predictions)
                 novelty = self.reward.get_novelty(decoded).to(self.device)
                 observation_entropy = estimate_observation_entropy(observation)
-                intrinsic_raw, r_comp, r_emp, r_safe = self.reward.get_intrinsic_reward(
+                (
+                    intrinsic_raw,
+                    r_comp,
+                    r_emp,
+                    r_safe,
+                    r_explore,
+                ) = self.reward.get_intrinsic_reward(
                     novelty, observation_entropy, action, latent_state, return_components=True
                 )
 
@@ -309,6 +315,7 @@ class TrainingLoop:
             "competence": r_comp.detach(),
             "empowerment": r_emp.detach(),
             "safety": r_safe.detach(),
+            "explore": r_explore.detach(),
         }
         self._write_memory(latents["z_self"], broadcast)
 
@@ -545,6 +552,7 @@ class TrainingLoop:
         empowerment_terms = []
         safety_terms = []
         intrinsic_terms = []
+        explore_terms = []
 
         dream_actions = []
         for step in range(self.config.dream_horizon):
@@ -579,6 +587,7 @@ class TrainingLoop:
                 dream_comp,
                 dream_emp,
                 dream_safe,
+                dream_explore,
             ) = self.reward.get_intrinsic_reward(
                 novelty,
                 observation_entropy,
@@ -590,6 +599,7 @@ class TrainingLoop:
             empowerment_terms.append(dream_emp.detach().mean())
             safety_terms.append(dream_safe.detach().mean())
             intrinsic_terms.append(dream_reward.detach().mean())
+            explore_terms.append(dream_explore.detach().mean())
 
             normalized_reward = self.reward_normalizer(dream_reward)
 
@@ -645,6 +655,7 @@ class TrainingLoop:
             "dream/empowerment": torch.stack(empowerment_terms).mean().detach(),
             "dream/safety": torch.stack(safety_terms).mean().detach(),
             "dream/policy_entropy": entropies_tensor.mean().detach(),
+            "dream/explore": torch.stack(explore_terms).mean().detach(),
         }
 
         return dream_loss, actor_loss, critic_loss, dreaming_metrics

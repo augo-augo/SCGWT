@@ -37,6 +37,7 @@ reward:
   lambda_comp: 0.5
   lambda_emp: 0.3
   lambda_safety: 0.2
+  lambda_explore: 0.1
 
 empowerment:
   latent_dim: 64
