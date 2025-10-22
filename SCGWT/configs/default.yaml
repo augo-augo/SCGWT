@@ -1,0 +1,74 @@
+encoder:
+  observation_shape: [3, 64, 64]
+  slot_dim: 64
+  num_slots: 5
+
+decoder:
+  observation_shape: [3, 64, 64]
+  slot_dim: 64
+  hidden_channels: [256, 128, 64]
+  initial_spatial: [4, 4]
+  activation: relu
+  output_activation: sigmoid
+  init_log_std: -0.5
+  learn_log_std: true
+
+dynamics:
+  latent_dim: 64
+  action_dim: 8
+  hidden_dim: 256
+
+workspace:
+  broadcast_slots: 3
+  self_bias: 1.0
+  novelty_weight: 1.0
+  progress_weight: 0.5
+  cost_weight: 0.1
+  progress_momentum: 0.1
+  action_cost_scale: 1.0
+  ucb_weight: 0.2
+  ucb_beta: 1.0
+
+reward:
+  alpha_fast: 0.1
+  novelty_high: 1.5
+  anxiety_penalty: 0.5
+  safety_entropy_floor: 0.1
+  lambda_comp: 0.5
+  lambda_emp: 0.3
+  lambda_safety: 0.2
+
+empowerment:
+  latent_dim: 64
+  action_dim: 8
+  hidden_dim: 256
+  queue_capacity: 256
+  temperature: 0.1
+
+episodic_memory:
+  capacity: 1000
+  key_dim: 64
+rollout_capacity: 2048
+batch_size: 64
+optimizer_lr: 0.001
+optimizer_empowerment_weight: 0.05
+actor:
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.05
+
+critic:
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.05
+
+self_state_dim: 2
+dream_horizon: 5
+discount_gamma: 0.99
+gae_lambda: 0.95
+entropy_coef: 0.01
+critic_coef: 0.5
+world_model_coef: 1.0
+
+world_model_ensemble: 5
+device: cpu
