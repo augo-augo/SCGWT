@@ -268,7 +268,6 @@ def main() -> None:
                 },
                 step=total_steps,
             )
-        env.close()
         wandb.finish()
 
 

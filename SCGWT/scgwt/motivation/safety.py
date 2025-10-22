@@ -15,7 +15,7 @@ def estimate_observation_entropy(observation: torch.Tensor, eps: float = 1e-6) -
     """
     if observation.ndim != 4:
         raise ValueError("observation must be [batch, channels, height, width]")
-    flat = observation.view(observation.size(0), -1)
+    flat = observation.reshape(observation.size(0), -1)
     variance = flat.var(dim=1, unbiased=False).clamp_min(eps)
     entropy = 0.5 * torch.log(2 * math.pi * math.e * variance)
     return entropy
