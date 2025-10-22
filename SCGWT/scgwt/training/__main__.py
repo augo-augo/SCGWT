@@ -136,7 +136,7 @@ def main() -> None:
     episode_steps = 0
     episode_horizon = args.max_steps
 
-    observation = env.reset(seed=args.seed)
+    observation = env.reset()
     frame = observation
     observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape)
     self_state_vec = _compute_self_state(
