@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Optional, Sequence
 
 import torch
 from torch import nn
@@ -174,7 +174,11 @@ class SlotAttentionEncoder(nn.Module):
             nn.Linear(feature_dim, config.slot_dim),
         )
 
-    def forward(self, observation: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        observation: torch.Tensor,
+        output_buffer: Optional[dict[str, torch.Tensor]] = None,
+    ) -> dict[str, torch.Tensor]:
         """
         Encode a batch of observations into latent slots.
 
@@ -188,10 +192,11 @@ class SlotAttentionEncoder(nn.Module):
         flat = features.view(batch, channels, height * width).permute(0, 2, 1)
         flat = self.positional(flat)
         flat = self.pre_slots(flat)
-        slots = self.slot_attention(flat)
-        # ``torch.compile`` with CUDA graphs reuses the same output storage across
-        # invocations. Downstream consumers persist ``z_self`` beyond a single
-        # step, so the buffer must be materialised into fresh storage to avoid
-        # accidental overwrites between iterations.
-        z_self = self.self_state(features).clone()
-        return {"z_self": z_self, "slots": slots}
+        slots_out = self.slot_attention(flat)
+        z_self_out = self.self_state(features)
+
+        if output_buffer is not None:
+            output_buffer["slots"].copy_(slots_out)
+            output_buffer["z_self"].copy_(z_self_out)
+            return output_buffer
+        return {"z_self": z_self_out, "slots": slots_out}
