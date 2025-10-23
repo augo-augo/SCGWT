@@ -317,6 +317,7 @@ class TrainingLoop:
                 )
                 features = self._assemble_features(latents["z_self"], broadcast, memory_context)
                 if action is None:
+                    self._graph_mark()
                     action_dist = self.actor(features)
                     action = action_dist.rsample()
                     (
@@ -337,7 +338,16 @@ class TrainingLoop:
                     action = action.to(self.device, non_blocking=True)
 
                 latent_state = broadcast.mean(dim=1)
+                self._graph_mark()
                 predictions = self.world_model.predict_next_latents(latent_state, action)
+                if self.config.compile_model:
+                    if isinstance(predictions, (list, tuple)):
+                        predictions = type(predictions)(
+                            pred.clone() for pred in predictions
+                        )
+                    else:
+                        predictions = predictions.clone()
+                self._graph_mark()
                 decoded = self.world_model.decode_predictions(predictions)
                 novelty = self.reward.get_novelty(decoded).to(self.device)
                 observation_entropy = estimate_observation_entropy(observation)
@@ -536,7 +546,16 @@ class TrainingLoop:
             latent_state = broadcast.mean(dim=1)
             features = self._assemble_features(latents["z_self"], broadcast, memory_context)
 
+            self._graph_mark()
             predictions = self.world_model.predict_next_latents(latent_state, actions)
+            if self.config.compile_model:
+                if isinstance(predictions, (list, tuple)):
+                    predictions = type(predictions)(
+                        pred.clone() for pred in predictions
+                    )
+                else:
+                    predictions = predictions.clone()
+            self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
             log_likelihoods = torch.stack(
                 [dist.log_prob(next_observations).mean() for dist in decoded]
@@ -593,7 +612,7 @@ class TrainingLoop:
     def _stable_dreaming(
         self, latents: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-        current_latents = latents
+        current_latents = self._clone_latent_tree(latents)
         memory_context = self._get_memory_context(current_latents["z_self"])
         actor_losses = []
         critic_losses = []
@@ -624,14 +643,24 @@ class TrainingLoop:
             features = self._assemble_features(
                 current_latents["z_self"], broadcast, memory_context
             )
+            self._graph_mark()
             action_dist = self.actor(features)
             dream_action = action_dist.rsample()
             dream_log_prob = action_dist.log_prob(dream_action)
             dream_entropy = action_dist.entropy()
-            dream_actions.append(dream_action)
+            dream_actions.append(dream_action.clone())
 
             latent_state = broadcast.mean(dim=1)
+            self._graph_mark()
             predictions = self.world_model.predict_next_latents(latent_state, dream_action)
+            if self.config.compile_model:
+                if isinstance(predictions, (list, tuple)):
+                    predictions = type(predictions)(
+                        pred.clone() for pred in predictions
+                    )
+                else:
+                    predictions = predictions.clone()
+            self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
             novelty = self.reward.get_novelty(decoded)
             predicted_obs = decoded[0].rsample()
@@ -657,14 +686,16 @@ class TrainingLoop:
 
             normalized_reward = self.reward_normalizer(dream_reward)
 
+            self._graph_mark()
             critic_value = self.critic(features)
-            values.append(critic_value)
-            rewards.append(normalized_reward)
-            log_probs.append(dream_log_prob)
-            entropies.append(dream_entropy)
+            values.append(critic_value.clone())
+            rewards.append(normalized_reward.clone())
+            log_probs.append(dream_log_prob.clone())
+            entropies.append(dream_entropy.clone())
 
             self._graph_mark()
             current_latents = self.world_model(predicted_obs)
+            current_latents = self._clone_latent_tree(current_latents)
             memory_context = self._get_memory_context(current_latents["z_self"])
 
         self._graph_mark()
@@ -682,6 +713,7 @@ class TrainingLoop:
         final_features = self._assemble_features(
             current_latents["z_self"], final_broadcast, memory_context
         )
+        self._graph_mark()
         next_value = self.critic(final_features)
 
         rewards_tensor = torch.stack(rewards)
