@@ -558,6 +558,7 @@ class TrainingLoop:
             self._graph_mark()
             latent_buffer = self._next_latent_buffer(observations.size(0))
             latents = self.world_model(observations, output_buffer=latent_buffer)
+            latents = self._clone_latents(latents)
             memory_context = self._get_memory_context(latents["z_self"])
             broadcast, _, _, _, _ = self._route_slots(
                 latents["slots"],
@@ -576,6 +577,7 @@ class TrainingLoop:
             predictions = self.world_model.predict_next_latents(
                 latent_state, actions, output_buffer=prediction_buffer
             )
+            predictions = self._clone_predictions(predictions)
             self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
             log_likelihoods = torch.stack(
@@ -587,6 +589,7 @@ class TrainingLoop:
             self._graph_mark()
             next_buffer = self._next_latent_buffer(next_observations.size(0))
             encoded_next = self.world_model(next_observations, output_buffer=next_buffer)
+            encoded_next = self._clone_latents(encoded_next)
             predicted_latent = torch.stack(predictions).mean(dim=0)
             target_latent = encoded_next["slots"].mean(dim=1)
             latent_alignment = torch.nn.functional.mse_loss(predicted_latent, target_latent)
@@ -634,7 +637,7 @@ class TrainingLoop:
     def _stable_dreaming(
         self, latents: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-        current_latents = latents
+        current_latents = self._clone_latents(latents)
         memory_context = self._get_memory_context(current_latents["z_self"])
         actor_losses = []
         critic_losses = []
@@ -680,6 +683,7 @@ class TrainingLoop:
             predictions = self.world_model.predict_next_latents(
                 latent_state, dream_action, output_buffer=prediction_buffer
             )
+            predictions = self._clone_predictions(predictions)
             self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
             novelty = self.reward.get_novelty(decoded)
@@ -720,6 +724,7 @@ class TrainingLoop:
             current_latents = self.world_model(
                 predicted_obs, output_buffer=next_latent_buffer
             )
+            current_latents = self._clone_latents(current_latents)
             del predicted_obs
             memory_context = self._get_memory_context(current_latents["z_self"])
 
@@ -813,6 +818,16 @@ class TrainingLoop:
 
     def _latent_output_dtype(self) -> torch.dtype:
         return self.autocast_dtype if self.autocast_enabled else self._world_model_param_dtype
+
+    @staticmethod
+    def _clone_latents(latents: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Create fresh storage for latent tensors to avoid CUDAGraph aliasing."""
+        return {key: value.clone() for key, value in latents.items()}
+
+    @staticmethod
+    def _clone_predictions(predictions: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Clone predicted latent tensors for safe reuse across compiled steps."""
+        return [tensor.clone() for tensor in predictions]
 
     def _create_latent_buffer(
         self, batch: int, dtype: torch.dtype
