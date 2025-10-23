@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import MutableMapping, Sequence
+from typing import Sequence
 
 import torch
 from torch import nn
@@ -177,8 +177,8 @@ class SlotAttentionEncoder(nn.Module):
     def forward(
         self,
         observation: torch.Tensor,
-        output_buffer: MutableMapping[str, torch.Tensor] | None = None,
-    ) -> MutableMapping[str, torch.Tensor]:
+        output_buffer: dict[str, torch.Tensor] | None = None,
+    ) -> dict[str, torch.Tensor]:
         """
         Encode a batch of observations into latent slots.
 
