@@ -31,6 +31,8 @@ class WorldModelEnsemble(nn.Module):
         self.encoder = SlotAttentionEncoder(config.encoder)
         self.decoder = SharedDecoder(config.decoder)
         self.frozen_decoder = copy.deepcopy(self.decoder)
+        for param in self.frozen_decoder.parameters():
+            param.requires_grad_(False)
         self.dynamics_models = nn.ModuleList(
             [DynamicsModel(config.dynamics) for _ in range(config.ensemble_size)]
         )

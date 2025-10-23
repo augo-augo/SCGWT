@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from scgwt.config import load_training_config
@@ -66,5 +67,17 @@ def test_training_loop_step_returns_result(tmp_path) -> None:
     assert set(result.raw_reward_components.keys()) == {"competence", "empowerment", "safety", "explore"}
     assert result.training_loss is None
     assert result.training_metrics is None
+
+
+def test_rollout_buffer_raises_on_empty_sample() -> None:
+    buffer = RolloutBuffer(capacity=100)
+    with pytest.raises(ValueError, match="Not enough samples"):
+        buffer.sample(batch_size=10)
+
+
+def test_rollout_buffer_raises_on_bad_batch_size() -> None:
+    buffer = RolloutBuffer(capacity=100)
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        buffer.sample(batch_size=0)
 
 

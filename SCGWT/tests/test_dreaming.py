@@ -60,6 +60,9 @@ def test_optimize_backpropagates_to_all_modules() -> None:
         assert key in metrics
     for value in metrics.values():
         assert math.isfinite(float(value))
+    expected_loss = torch.tensor(1230.051025390625)
+    actual_loss = torch.tensor(metrics["train/total_loss"])
+    assert torch.allclose(actual_loss, expected_loss, atol=1e-6)
 
     def _has_grad(module: torch.nn.Module) -> bool:
         grads = [param.grad for param in module.parameters() if param.requires_grad]
