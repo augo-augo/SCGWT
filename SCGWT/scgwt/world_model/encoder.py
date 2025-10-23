@@ -189,5 +189,5 @@ class SlotAttentionEncoder(nn.Module):
         flat = self.positional(flat)
         flat = self.pre_slots(flat)
         slots = self.slot_attention(flat)
-        z_self = self.self_state(features).clone()
+        z_self = self.self_state(features)
         return {"z_self": z_self, "slots": slots}

@@ -12,6 +12,26 @@ from .dynamics import DynamicsConfig, DynamicsModel
 from .encoder import EncoderConfig, SlotAttentionEncoder
 
 
+def _maybe_clone_latents(
+    latents: dict[str, torch.Tensor], should_clone: bool
+) -> dict[str, torch.Tensor]:
+    """Optionally clone all tensor values in the latent dictionary."""
+
+    if not should_clone:
+        return latents
+    return _clone_tensor_dict(latents)
+
+
+@torch._dynamo.disable
+def _clone_tensor_dict(latents: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Clone every tensor contained in the latent dictionary."""
+
+    return {
+        key: value.clone() if isinstance(value, torch.Tensor) else value
+        for key, value in latents.items()
+    }
+
+
 @dataclass
 class WorldModelConfig:
     encoder: EncoderConfig
@@ -34,6 +54,7 @@ class WorldModelEnsemble(nn.Module):
         self.dynamics_models = nn.ModuleList(
             [DynamicsModel(config.dynamics) for _ in range(config.ensemble_size)]
         )
+        self.clone_outputs: bool = False
 
     @torch.no_grad()
     def refresh_frozen_decoder(self) -> None:
@@ -42,7 +63,8 @@ class WorldModelEnsemble(nn.Module):
 
     def forward(self, observation: torch.Tensor) -> dict[str, torch.Tensor]:
         """Encode an observation into a dict of latent slots."""
-        return self.encoder(observation)
+        latents = self.encoder(observation)
+        return _maybe_clone_latents(latents, self.clone_outputs)
 
     def predict_next_latents(
         self, latent_state: torch.Tensor, action: torch.Tensor
