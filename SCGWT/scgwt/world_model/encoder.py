@@ -189,5 +189,9 @@ class SlotAttentionEncoder(nn.Module):
         flat = self.positional(flat)
         flat = self.pre_slots(flat)
         slots = self.slot_attention(flat)
-        z_self = self.self_state(features)
+        # ``torch.compile`` with CUDA graphs reuses the same output storage across
+        # invocations. Downstream consumers persist ``z_self`` beyond a single
+        # step, so the buffer must be materialised into fresh storage to avoid
+        # accidental overwrites between iterations.
+        z_self = self.self_state(features).clone()
         return {"z_self": z_self, "slots": slots}
