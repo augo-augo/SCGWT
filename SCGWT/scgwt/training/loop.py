@@ -864,7 +864,7 @@ class TrainingLoop:
         )
         # Detach final value prediction, it's a target for GAE
         self._graph_mark()
-        next_value = self.critic(final_features).detach()
+        next_value = self.critic(final_features).detach().clone()
 
         rewards_tensor = torch.stack(rewards)
         values_tensor = torch.stack(values)
