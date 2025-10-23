@@ -337,6 +337,8 @@ def main() -> None:
         actor_threads.append(thread)
 
     latest_training_loss: float | None = None
+    pending_training_metrics: dict[str, float] | None = None
+    last_logged_step = 0
     try:
         while True:
             processed = False
@@ -386,6 +388,7 @@ def main() -> None:
                         name = state_names[idx] if idx < len(state_names) else f"feature_{idx}"
                         step_metrics[f"self_state/{name}"] = float(value)
                     wandb.log(step_metrics, step=step_value)
+                    last_logged_step = max(last_logged_step, step_value)
                     if message.get("done") and message.get("achievements_count", 0):
                         wandb.log(
                             {"episode/final_achievements": int(message["achievements_count"])},
@@ -413,13 +416,19 @@ def main() -> None:
                             {label: wandb.Video(frames, fps=8, format="gif", caption=caption)},
                             step=int(message.get("step", 0)),
                         )
+            if pending_training_metrics is not None:
+                step_for_metrics = last_logged_step
+                if step_for_metrics <= 0:
+                    with steps_lock:
+                        step_for_metrics = shared_state["steps"]
+                wandb.log(pending_training_metrics, step=step_for_metrics)
+                pending_training_metrics = None
             metrics = loop._optimize()
             if metrics:
-                with steps_lock:
-                    current_step = shared_state["steps"]
-                wandb.log(metrics, step=current_step)
-                latest_training_loss = metrics.get("train/total_loss")
+                pending_training_metrics = metrics
                 processed = True
+                latest_training_loss = metrics.get("train/total_loss")
+                continue
             if (
                 stop_event.is_set()
                 and all(not thread.is_alive() for thread in actor_threads)
