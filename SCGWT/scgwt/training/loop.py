@@ -354,6 +354,8 @@ class TrainingLoop:
                 intrinsic_raw, norm_components, raw_components = self.reward.get_intrinsic_reward(
                     novelty, observation_entropy, action, latent_state, return_components=True
                 )
+                del decoded
+                del predictions
 
         intrinsic = self.reward_normalizer(intrinsic_raw)
         reward_components = {key: value.detach() for key, value in norm_components.items()}
@@ -561,6 +563,7 @@ class TrainingLoop:
                 [dist.log_prob(next_observations).mean() for dist in decoded]
             )
             world_model_loss = -log_likelihoods.mean()
+            del decoded
 
             self._graph_mark()
             encoded_next = self.world_model(next_observations)
@@ -568,6 +571,7 @@ class TrainingLoop:
             predicted_latent = torch.stack(predictions).mean(dim=0)
             target_latent = encoded_next["slots"].mean(dim=1)
             latent_alignment = torch.nn.functional.mse_loss(predicted_latent, target_latent)
+            del predictions
             world_model_loss = (
                 world_model_loss + 0.1 * latent_alignment
             ) * self.config.world_model_coef
@@ -672,6 +676,8 @@ class TrainingLoop:
                 latent_state,
                 return_components=True,
             )
+            del decoded
+            del predictions
             dream_comp = norm_components["competence"]
             dream_emp = norm_components["empowerment"]
             dream_safe = norm_components["safety"]
@@ -696,6 +702,7 @@ class TrainingLoop:
             self._graph_mark()
             current_latents = self.world_model(predicted_obs)
             current_latents = self._clone_latent_tree(current_latents)
+            del predicted_obs
             memory_context = self._get_memory_context(current_latents["z_self"])
 
         self._graph_mark()
