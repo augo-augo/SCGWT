@@ -263,6 +263,28 @@ class TrainingLoop:
 
             return legacy_autocast()
 
+    def _call_with_fallback(self, attr: str, *args, **kwargs):
+        module = getattr(self, attr)
+        try:
+            return module(*args, **kwargs)
+        except RuntimeError as err:
+            message = str(err).lower()
+            if "symbolically trace a dynamo-optimized function" in message:
+                original = getattr(module, "_orig_mod", None)
+                if original is None:
+                    raise
+                original = original.to(self.device)
+                original.train(module.training)
+                setattr(self, attr, original)
+                try:
+                    import torch._dynamo as _dynamo  # type: ignore[attr-defined]
+
+                    _dynamo.reset()
+                except Exception:
+                    pass
+                return original(*args, **kwargs)
+            raise
+
     def step(
         self,
         observation: torch.Tensor,
@@ -304,7 +326,7 @@ class TrainingLoop:
 
         with torch.no_grad():
             with self._autocast_ctx():
-                latents = self.world_model(observation)
+                latents = self._call_with_fallback("world_model", observation)
                 memory_context = self._get_memory_context(latents["z_self"])
                 if action is not None:
                     action_for_routing = action.to(self.device, non_blocking=True)
@@ -327,7 +349,7 @@ class TrainingLoop:
                 )
                 features = self._assemble_features(latents["z_self"], broadcast, memory_context)
                 if action is None:
-                    action_dist = self.actor(features)
+                    action_dist = self._call_with_fallback("actor", features)
                     action = action_dist.rsample()
                     (
                         broadcast,
@@ -538,7 +560,7 @@ class TrainingLoop:
         self.optimizer.zero_grad(set_to_none=True)
 
         with self._autocast_ctx():
-            latents = self.world_model(observations)
+            latents = self._call_with_fallback("world_model", observations)
             memory_context = self._get_memory_context(latents["z_self"])
             broadcast, _, _, _, _ = self._route_slots(
                 latents["slots"],
@@ -557,7 +579,7 @@ class TrainingLoop:
             )
             world_model_loss = -log_likelihoods.mean()
 
-            encoded_next = self.world_model(next_observations)
+            encoded_next = self._call_with_fallback("world_model", next_observations)
             predicted_latent = torch.stack(predictions).mean(dim=0)
             target_latent = encoded_next["slots"].mean(dim=1)
             latent_alignment = torch.nn.functional.mse_loss(predicted_latent, target_latent)
@@ -635,7 +657,7 @@ class TrainingLoop:
             features = self._assemble_features(
                 current_latents["z_self"], broadcast, memory_context
             )
-            action_dist = self.actor(features)
+            action_dist = self._call_with_fallback("actor", features)
             dream_action = action_dist.rsample()
             dream_log_prob = action_dist.log_prob(dream_action)
             dream_entropy = action_dist.entropy()
@@ -668,13 +690,13 @@ class TrainingLoop:
 
             normalized_reward = self.reward_normalizer(dream_reward)
 
-            critic_value = self.critic(features)
+            critic_value = self._call_with_fallback("critic", features)
             values.append(critic_value)
             rewards.append(normalized_reward)
             log_probs.append(dream_log_prob)
             entropies.append(dream_entropy)
 
-            current_latents = self.world_model(predicted_obs)
+            current_latents = self._call_with_fallback("world_model", predicted_obs)
             memory_context = self._get_memory_context(current_latents["z_self"])
 
         final_broadcast, _, _, _, _ = self._route_slots(
@@ -691,7 +713,7 @@ class TrainingLoop:
         final_features = self._assemble_features(
             current_latents["z_self"], final_broadcast, memory_context
         )
-        next_value = self.critic(final_features)
+        next_value = self._call_with_fallback("critic", final_features)
 
         rewards_tensor = torch.stack(rewards)
         values_tensor = torch.stack(values)

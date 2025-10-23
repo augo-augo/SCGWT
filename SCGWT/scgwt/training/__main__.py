@@ -299,6 +299,10 @@ def main() -> None:
         config=OmegaConf.to_container(raw_cfg, resolve=True),
         name=f"crafter_seed{args.seed}",
     )
+    wandb.define_metric("step/total_steps", summary="max")
+    wandb.define_metric("step/*", step_metric="step/total_steps")
+    wandb.define_metric("train/*", step_metric="step/total_steps")
+    wandb.define_metric("dream/*", step_metric="step/total_steps")
 
     loop = TrainingLoop(config)
     num_workers = max(1, args.actor_workers)
