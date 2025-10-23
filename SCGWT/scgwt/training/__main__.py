@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import List, Tuple
 
 import crafter
 import numpy as np
@@ -12,35 +11,8 @@ import torch.nn.functional as F
 import wandb
 from omegaconf import OmegaConf
 
-if torch.cuda.is_available():
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-
 from scgwt.config import load_training_config
 from scgwt.training import TrainingLoop
-
-
-def _scalarize(value: Any) -> float | int | bool:
-    """Convert tensors and numpy scalars to plain Python types for logging."""
-    if isinstance(value, torch.Tensor):
-        if value.numel() != 1:
-            raise ValueError("Only scalar tensors can be logged to Weights & Biases.")
-        value = value.detach().cpu().item()
-    elif isinstance(value, np.generic):
-        value = value.item()
-    return value
-
-
-def _sanitize_metrics(metrics: Dict[str, Any]) -> Dict[str, float | int | bool]:
-    sanitized: Dict[str, float | int | bool] = {}
-    for key, value in metrics.items():
-        scalar = _scalarize(value)
-        if isinstance(scalar, (bool, int, float)):
-            sanitized[key] = scalar
-        else:
-            sanitized[key] = float(scalar)
-    return sanitized
 
 
 def _frame_to_chw(frame: np.ndarray) -> np.ndarray:
@@ -70,7 +42,7 @@ def _preprocess_frame(
     tensor = tensor.to(device=device, dtype=torch.float32, non_blocking=True)
     if tensor.max() > 1.0:
         tensor = tensor / 255.0
-    tensor = tensor.unsqueeze(0).contiguous(memory_format=torch.channels_last)
+    tensor = tensor.unsqueeze(0)
     spatial_size = (target_shape[1], target_shape[2])
     if tensor.shape[-2:] != spatial_size:
         tensor = F.interpolate(tensor, size=spatial_size, mode="bilinear", align_corners=False)
@@ -140,7 +112,7 @@ def main() -> None:
     parser.add_argument(
         "--log-interval",
         type=int,
-        default=None,
+        default=50,
         help="How frequently to print intrinsic reward diagnostics.",
     )
     args = parser.parse_args()
@@ -175,33 +147,7 @@ def main() -> None:
     self_state_vec = _compute_self_state(
         info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
     ).unsqueeze(0).to(runtime_device)
-    log_videos = bool(getattr(config, "log_videos", getattr(config, "log_images", True)))
-    video_log_freq = max(1, int(getattr(config, "video_log_freq", 1)))
-    capture_videos = log_videos and getattr(config, "log_images", True)
-
-    episode_frames = [_frame_to_chw(frame)] if capture_videos else []
-
-    log_interval = args.log_interval if args.log_interval is not None else config.log_every_steps
-    if not log_interval or log_interval <= 0:
-        log_interval = 1
-
-    step_metric_accumulator: Dict[str, List[float]] = defaultdict(list)
-    passthrough_step_keys = {"step/total_steps", "step/episode", "step/episode_steps"}
-
-    def flush_step_metrics(step_idx: int) -> None:
-        if not step_metric_accumulator:
-            return
-        aggregated: Dict[str, float] = {}
-        for key, values in step_metric_accumulator.items():
-            if not values:
-                continue
-            if key in passthrough_step_keys:
-                aggregated[key] = float(values[-1])
-            else:
-                aggregated[f"{key}_mean"] = float(np.mean(values))
-        step_metric_accumulator.clear()
-        if aggregated:
-            wandb.log(_sanitize_metrics(aggregated), step=step_idx)
+    episode_frames = [_frame_to_chw(frame)]
 
     try:
         while total_steps < args.max_steps:
@@ -222,8 +168,7 @@ def main() -> None:
                 self_state=self_state_vec,
                 train=True,
             )
-            if capture_videos:
-                episode_frames.append(_frame_to_chw(next_observation))
+            episode_frames.append(_frame_to_chw(next_observation))
 
             next_total_steps = total_steps + 1
             next_episode_steps = episode_steps + 1
@@ -279,27 +224,12 @@ def main() -> None:
                 for idx in range(next_self_state_vec.shape[1]):
                     name = state_names[idx] if idx < len(state_names) else f"feature_{idx}"
                     step_metrics[f"self_state/{name}"] = float(next_self_state_vec[0, idx].item())
-
-            for key, value in step_metrics.items():
-                scalar = _scalarize(value)
-                step_metric_accumulator[key].append(float(scalar))
-
-            should_flush_metrics = (
-                next_total_steps % log_interval == 0
-                or terminated
-                or truncated
-                or next_total_steps >= args.max_steps
-            )
-            if should_flush_metrics:
-                flush_step_metrics(next_total_steps)
+            wandb.log(step_metrics, step=next_total_steps)
 
             if training_result.training_metrics is not None:
-                wandb.log(
-                    _sanitize_metrics(training_result.training_metrics),
-                    step=next_total_steps,
-                )
+                wandb.log(training_result.training_metrics, step=next_total_steps)
 
-            if log_interval and next_total_steps % log_interval == 0:
+            if args.log_interval and next_total_steps % args.log_interval == 0:
                 intrinsic = policy_result.intrinsic_reward.mean().item()
                 novelty = policy_result.novelty.mean().item()
                 entropy = policy_result.observation_entropy.mean().item()
@@ -320,7 +250,7 @@ def main() -> None:
             frame = next_observation
 
             if terminated or truncated:
-                if capture_videos and episode_frames and episode % video_log_freq == 0:
+                if episode_frames:
                     video_array = np.stack(episode_frames, axis=0)
                     wandb.log(
                         {
@@ -346,18 +276,11 @@ def main() -> None:
                 self_state_vec = _compute_self_state(
                     info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
                 ).unsqueeze(0).to(runtime_device)
-                episode_frames = [_frame_to_chw(frame)] if capture_videos else []
+                episode_frames = [_frame_to_chw(frame)]
                 print(f"Episode {episode} reset (info: {info})")
 
     finally:
-        flush_step_metrics(total_steps)
-        if (
-            capture_videos
-            and total_steps >= args.max_steps
-            and episode_frames
-            and len(episode_frames) > 1
-            and episode % video_log_freq == 0
-        ):
+        if total_steps >= args.max_steps and episode_frames and len(episode_frames) > 1:
             video_array = np.stack(episode_frames, axis=0)
             wandb.log(
                 {

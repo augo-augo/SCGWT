@@ -6,7 +6,7 @@ encoder:
 decoder:
   observation_shape: [3, 64, 64]
   slot_dim: 64
-  hidden_channels: [192, 96, 48]
+  hidden_channels: [256, 128, 64]
   initial_spatial: [4, 4]
   activation: relu
   output_activation: sigmoid
@@ -22,11 +22,11 @@ workspace:
   broadcast_slots: 3
   self_bias: 1.0
   novelty_weight: 1.0
-  progress_weight: 0.6
-  cost_weight: 0.05
+  progress_weight: 0.6       # ↑ was 0.5
+  cost_weight: 0.05          # ↓ was 0.1
   progress_momentum: 0.1
   action_cost_scale: 1.0
-  ucb_weight: 0.25
+  ucb_weight: 0.25           # ↑ was 0.2
   ucb_beta: 1.0
 
 reward:
@@ -34,25 +34,27 @@ reward:
   novelty_high: 1.5
   anxiety_penalty: 0.5
   safety_entropy_floor: 0.1
-  lambda_comp: 1.0
-  lambda_emp: 0.25
-  lambda_safety: 0.15
-  lambda_explore: 1.2
+  lambda_comp: 1.0           # ↑ was 0.7
+  lambda_emp: 0.25           # ↓ was 0.3
+  lambda_safety: 0.15        # ↓ was 0.3
+  lambda_explore: 1.2        # ↑ was 0.5
 
 empowerment:
   latent_dim: 64
   action_dim: 17
   hidden_dim: 256
   queue_capacity: 256
-  temperature: 0.25
+  temperature: 0.25          # ↑ was 0.1
 
 episodic_memory:
   capacity: 1000
   key_dim: 64
-rollout_capacity: 8192
-batch_size: 256
+
+rollout_capacity: 4096
+batch_size: 128
 optimizer_lr: 0.001
-optimizer_empowerment_weight: 0.03
+optimizer_empowerment_weight: 0.03  # ↓ was 0.05
+
 actor:
   hidden_dim: 256
   num_layers: 2
@@ -64,17 +66,12 @@ critic:
   dropout: 0.05
 
 self_state_dim: 2
-dream_horizon: 8
+dream_horizon: 12
 discount_gamma: 0.99
 gae_lambda: 0.95
-entropy_coef: 0.02
+entropy_coef: 0.02            # ↑ was 0.01 (consider cosine-anneal to ~0.006)
 critic_coef: 0.5
 world_model_coef: 1.0
 
-world_model_ensemble: 3
+world_model_ensemble: 5
 device: cuda
-precision: bf16
-log_every_steps: 200
-log_images: true
-channels_last: true
-compile_model: true

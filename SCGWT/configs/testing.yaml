@@ -6,7 +6,7 @@ encoder:
 decoder:
   observation_shape: [3, 32, 32]
   slot_dim: 32
-  hidden_channels: [128, 64, 32]
+  hidden_channels: [128, 64]
   initial_spatial: [4, 4]
   activation: elu
   output_activation: sigmoid
@@ -22,7 +22,7 @@ workspace:
   broadcast_slots: 2
   self_bias: 0.5
   novelty_weight: 1.2
-  progress_weight: 0.4
+  progress_weight: 0.3
   cost_weight: 0.05
   progress_momentum: 0.15
   action_cost_scale: 0.5
@@ -34,25 +34,25 @@ reward:
   novelty_high: 1.0
   anxiety_penalty: 0.2
   safety_entropy_floor: 0.2
-  lambda_comp: 1.0
+  lambda_comp: 0.7
   lambda_emp: 0.3
-  lambda_safety: 0.2
-  lambda_explore: 1.2
+  lambda_safety: 0.3
+  lambda_explore: 0.5
 
 empowerment:
   latent_dim: 32
   action_dim: 17
   hidden_dim: 96
   queue_capacity: 64
-  temperature: 0.25
+  temperature: 0.2
 
 episodic_memory:
   capacity: 100
   key_dim: 32
-rollout_capacity: 2048
-batch_size: 64
+rollout_capacity: 1024
+batch_size: 32
 optimizer_lr: 0.001
-optimizer_empowerment_weight: 0.03
+optimizer_empowerment_weight: 0.05
 actor:
   hidden_dim: 128
   num_layers: 2
@@ -73,8 +73,3 @@ world_model_coef: 1.0
 
 world_model_ensemble: 3
 device: cpu
-precision: float32
-log_every_steps: 50
-log_images: false
-channels_last: false
-compile_model: false

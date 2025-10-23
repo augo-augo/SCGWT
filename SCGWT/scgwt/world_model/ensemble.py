@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, List
 
 import torch
 from torch import nn
@@ -40,34 +40,19 @@ class WorldModelEnsemble(nn.Module):
         """Synchronize the frozen observer head with the trainable decoder."""
         self.frozen_decoder.load_state_dict(self.decoder.state_dict())
 
-    def forward(
-        self,
-        observation: torch.Tensor,
-        output_buffer: dict[str, torch.Tensor] | None = None,
-    ) -> dict[str, torch.Tensor]:
+    def forward(self, observation: torch.Tensor) -> dict[str, torch.Tensor]:
         """Encode an observation into a dict of latent slots."""
-        return self.encoder(observation, output_buffer=output_buffer)
+        return self.encoder(observation)
 
     def predict_next_latents(
-        self,
-        latent_state: torch.Tensor,
-        action: torch.Tensor,
-        output_buffer: list[torch.Tensor] | None = None,
-    ) -> list[torch.Tensor]:
+        self, latent_state: torch.Tensor, action: torch.Tensor
+    ) -> List[torch.Tensor]:
         """Run the ensemble forward to obtain next-state predictions."""
-        if output_buffer is None:
-            return [model(latent_state, action) for model in self.dynamics_models]
-
-        if len(output_buffer) != len(self.dynamics_models):
-            raise ValueError("output_buffer length must match ensemble size")
-
-        for dest, model in zip(output_buffer, self.dynamics_models):
-            model(latent_state, action, output_buffer=dest)
-        return output_buffer
+        return [model(latent_state, action) for model in self.dynamics_models]
 
     def decode_predictions(
         self, predicted_latents: Iterable[torch.Tensor], use_frozen: bool = True
-    ) -> list[torch.distributions.Distribution]:
+    ) -> List[torch.distributions.Distribution]:
         """Decode predicted latent states into observation distributions."""
         decoder = self.frozen_decoder if use_frozen else self.decoder
         return [decoder(latent) for latent in predicted_latents]

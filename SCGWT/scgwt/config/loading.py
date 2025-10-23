@@ -69,11 +69,6 @@ def load_training_config(path: str | Path, overrides: Iterable[str] | None = Non
     world_model_coef = resolved.get("world_model_coef", 1.0)
     device = resolved.get("device", "cpu")
     self_state_dim = resolved.get("self_state_dim", 0)
-    precision = resolved.get("precision", "float32")
-    log_every_steps = resolved.get("log_every_steps", 50)
-    log_images = resolved.get("log_images", True)
-    channels_last = resolved.get("channels_last", False)
-    compile_model = resolved.get("compile_model", False)
 
     return TrainingConfig(
         encoder=encoder,
@@ -98,11 +93,6 @@ def load_training_config(path: str | Path, overrides: Iterable[str] | None = Non
         world_model_coef=world_model_coef,
         self_state_dim=self_state_dim,
         device=device,
-        precision=precision,
-        log_every_steps=log_every_steps,
-        log_images=log_images,
-        channels_last=channels_last,
-        compile_model=compile_model,
     )
 
 

@@ -146,7 +146,7 @@ class _SlotAttention(nn.Module):
                 slots_prev.reshape(-1, d),
             )
             slots = slots.view(b, self.num_slots, d)
-        slots = slots + self.mlp(self.norm_mlp(slots))
+            slots = slots + self.mlp(self.norm_mlp(slots))
         return slots
 
 
@@ -174,11 +174,7 @@ class SlotAttentionEncoder(nn.Module):
             nn.Linear(feature_dim, config.slot_dim),
         )
 
-    def forward(
-        self,
-        observation: torch.Tensor,
-        output_buffer: dict[str, torch.Tensor] | None = None,
-    ) -> dict[str, torch.Tensor]:
+    def forward(self, observation: torch.Tensor) -> dict[str, torch.Tensor]:
         """
         Encode a batch of observations into latent slots.
 
@@ -194,10 +190,4 @@ class SlotAttentionEncoder(nn.Module):
         flat = self.pre_slots(flat)
         slots = self.slot_attention(flat)
         z_self = self.self_state(features)
-
-        if output_buffer is None:
-            return {"z_self": z_self, "slots": slots}
-
-        output_buffer["slots"].copy_(slots)
-        output_buffer["z_self"].copy_(z_self)
-        return output_buffer
+        return {"z_self": z_self, "slots": slots}
