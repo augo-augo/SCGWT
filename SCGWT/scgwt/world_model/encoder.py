@@ -146,7 +146,7 @@ class _SlotAttention(nn.Module):
                 slots_prev.reshape(-1, d),
             )
             slots = slots.view(b, self.num_slots, d)
-        slots = slots.clone() + self.mlp(self.norm_mlp(slots))
+        slots = slots + self.mlp(self.norm_mlp(slots))
         return slots
 
 

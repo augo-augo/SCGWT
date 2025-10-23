@@ -86,16 +86,18 @@ class IntrinsicRewardGenerator:
         """Compute epistemic novelty from an ensemble of predicted observation distributions."""
         return self.novelty_metric(predicted_observations)
 
-    def _update_fast_ema(self, novelty: torch.Tensor) -> torch.Tensor:
+    def _update_fast_ema(
+        self, novelty: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         alpha = self.config.alpha_fast
         if self.ema_fast.device != novelty.device:
             self.ema_fast = self.ema_fast.to(novelty.device)
-        self.ema_fast = (1 - alpha) * self.ema_fast + alpha * novelty.detach()
-        return self.ema_fast
+        ema_prev = self.ema_fast
+        self.ema_fast = (1 - alpha) * ema_prev + alpha * novelty.detach()
+        return ema_prev, self.ema_fast
 
     def get_competence(self, novelty: torch.Tensor) -> torch.Tensor:
-        ema_prev = self.ema_fast.clone()
-        ema_current = self._update_fast_ema(novelty)
+        ema_prev, ema_current = self._update_fast_ema(novelty)
         progress = ema_prev - ema_current
         penalty = self.config.anxiety_penalty * torch.relu(novelty - self.config.novelty_high)
         return progress - penalty
