@@ -691,10 +691,14 @@ class TrainingLoop:
 
             self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False) # Use trainable decoder
-            log_likelihoods = torch.stack(
-                 [dist.log_prob(next_observations).mean(dim=list(range(1, next_observations.ndim)))
-                  for dist in decoded]
-            )
+            log_likelihoods = []
+            for dist in decoded:
+                log_prob = dist.log_prob(next_observations)
+                if log_prob.ndim > 1:
+                    # Reduce over non-batch dims only when they exist
+                    log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
+                log_likelihoods.append(log_prob)
+            log_likelihoods = torch.stack(log_likelihoods)
             world_model_recon_loss = -log_likelihoods.mean(dim=0).mean() # Avg over ensemble and batch
             del decoded
 
