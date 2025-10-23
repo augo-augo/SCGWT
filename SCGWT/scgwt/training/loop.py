@@ -292,6 +292,7 @@ class TrainingLoop:
 
         with torch.no_grad():
             with self._autocast_ctx():
+                self._graph_mark()
                 latents = self.world_model(observation)
                 memory_context = self._get_memory_context(latents["z_self"])
                 if action is not None:
@@ -514,6 +515,7 @@ class TrainingLoop:
         self.optimizer.zero_grad(set_to_none=True)
 
         with self._autocast_ctx():
+            self._graph_mark()
             latents = self.world_model(observations)
             memory_context = self._get_memory_context(latents["z_self"])
             broadcast, _, _, _, _ = self._route_slots(
@@ -533,6 +535,7 @@ class TrainingLoop:
             )
             world_model_loss = -log_likelihoods.mean()
 
+            self._graph_mark()
             encoded_next = self.world_model(next_observations)
             predicted_latent = torch.stack(predictions).mean(dim=0)
             target_latent = encoded_next["slots"].mean(dim=1)
@@ -739,6 +742,10 @@ class TrainingLoop:
             advantages[t] = last_advantage
         returns = advantages + values
         return advantages, returns
+
+    def _graph_mark(self) -> None:
+        if self.config.compile_model and cudagraph_mark_step_begin is not None:
+            cudagraph_mark_step_begin()
 
 
 
