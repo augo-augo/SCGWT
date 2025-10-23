@@ -122,6 +122,11 @@ class TrainingConfig:
     world_model_coef: float = 1.0
     self_state_dim: int = 0
     device: str = "cpu"
+    precision: str = "float32"
+    log_every_steps: int = 50
+    log_images: bool = True
+    channels_last: bool = False
+    compile_model: bool = False
 
 
 class TrainingLoop:
@@ -130,6 +135,14 @@ class TrainingLoop:
     def __init__(self, config: TrainingConfig) -> None:
         self.config = config
         self.device = torch.device(config.device)
+        precision_key = config.precision.lower()
+        if precision_key in {"bf16", "bfloat16"}:
+            self.autocast_dtype = torch.bfloat16
+        elif precision_key in {"fp16", "float16", "half"}:
+            self.autocast_dtype = torch.float16
+        else:
+            self.autocast_dtype = torch.float32
+        self.autocast_enabled = self.device.type == "cuda" and self.autocast_dtype != torch.float32
         self.progress_momentum = config.workspace.progress_momentum
         self.action_cost_scale = config.workspace.action_cost_scale
         wm_config = WorldModelConfig(
@@ -185,6 +198,22 @@ class TrainingLoop:
             self.self_state_encoder = None
             self.self_state_predictor = None
 
+        if config.channels_last and self.device.type == "cuda":
+            for module in (self.world_model, self.actor, self.critic):
+                module.to(memory_format=torch.channels_last)
+                for parameter in module.parameters():
+                    if parameter.ndim >= 4:
+                        parameter.data = parameter.data.contiguous(memory_format=torch.channels_last)
+
+        if config.compile_model:
+            for name in ("world_model", "actor", "critic"):
+                module = getattr(self, name)
+                try:
+                    compiled = torch.compile(module, mode="max-autotune", fullgraph=False)
+                except Exception:
+                    compiled = module
+                setattr(self, name, compiled)
+
         self._slot_baseline: torch.Tensor | None = None
         self._ucb_mean: torch.Tensor | None = None
         self._ucb_counts: torch.Tensor | None = None
@@ -203,14 +232,18 @@ class TrainingLoop:
             params.extend(self.self_state_encoder.parameters())
         if self.self_state_predictor is not None:
             params.extend(self.self_state_predictor.parameters())
-        self.optimizer = torch.optim.Adam(params, lr=config.optimizer_lr)
+        try:
+            self.optimizer = torch.optim.AdamW(params, lr=config.optimizer_lr, fused=True)
+        except (TypeError, ValueError):
+            self.optimizer = torch.optim.AdamW(params, lr=config.optimizer_lr)
         self.optimizer_empowerment_weight = config.optimizer_empowerment_weight
-        self.autocast_enabled = self.device.type == "cuda"
-        self.grad_scaler = GradScaler(enabled=self.autocast_enabled)
+        self.grad_scaler = GradScaler(
+            enabled=self.autocast_enabled and self.autocast_dtype == torch.float16
+        )
 
     def _autocast_ctx(self):
         if self.autocast_enabled:
-            return autocast()
+            return autocast(device_type=self.device.type, dtype=self.autocast_dtype)
         return nullcontext()
 
     def step(
@@ -699,6 +732,8 @@ class TrainingLoop:
             advantages[t] = last_advantage
         returns = advantages + values
         return advantages, returns
+
+
 
 
 

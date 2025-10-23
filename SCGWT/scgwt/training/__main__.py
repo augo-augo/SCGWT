@@ -11,6 +11,11 @@ import torch.nn.functional as F
 import wandb
 from omegaconf import OmegaConf
 
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
 from scgwt.config import load_training_config
 from scgwt.training import TrainingLoop
 
@@ -42,7 +47,7 @@ def _preprocess_frame(
     tensor = tensor.to(device=device, dtype=torch.float32, non_blocking=True)
     if tensor.max() > 1.0:
         tensor = tensor / 255.0
-    tensor = tensor.unsqueeze(0)
+    tensor = tensor.unsqueeze(0).contiguous(memory_format=torch.channels_last)
     spatial_size = (target_shape[1], target_shape[2])
     if tensor.shape[-2:] != spatial_size:
         tensor = F.interpolate(tensor, size=spatial_size, mode="bilinear", align_corners=False)
@@ -112,7 +117,7 @@ def main() -> None:
     parser.add_argument(
         "--log-interval",
         type=int,
-        default=50,
+        default=None,
         help="How frequently to print intrinsic reward diagnostics.",
     )
     args = parser.parse_args()
@@ -148,6 +153,8 @@ def main() -> None:
         info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
     ).unsqueeze(0).to(runtime_device)
     episode_frames = [_frame_to_chw(frame)]
+
+    log_interval = args.log_interval if args.log_interval is not None else config.log_every_steps
 
     try:
         while total_steps < args.max_steps:
@@ -229,7 +236,7 @@ def main() -> None:
             if training_result.training_metrics is not None:
                 wandb.log(training_result.training_metrics, step=next_total_steps)
 
-            if args.log_interval and next_total_steps % args.log_interval == 0:
+            if log_interval and next_total_steps % log_interval == 0:
                 intrinsic = policy_result.intrinsic_reward.mean().item()
                 novelty = policy_result.novelty.mean().item()
                 entropy = policy_result.observation_entropy.mean().item()
@@ -250,7 +257,7 @@ def main() -> None:
             frame = next_observation
 
             if terminated or truncated:
-                if episode_frames:
+                if config.log_images and episode_frames:
                     video_array = np.stack(episode_frames, axis=0)
                     wandb.log(
                         {
@@ -280,7 +287,7 @@ def main() -> None:
                 print(f"Episode {episode} reset (info: {info})")
 
     finally:
-        if total_steps >= args.max_steps and episode_frames and len(episode_frames) > 1:
+        if config.log_images and total_steps >= args.max_steps and episode_frames and len(episode_frames) > 1:
             video_array = np.stack(episode_frames, axis=0)
             wandb.log(
                 {

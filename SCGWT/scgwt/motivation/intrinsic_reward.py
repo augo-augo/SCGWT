@@ -134,7 +134,7 @@ class IntrinsicRewardGenerator:
             + self.config.lambda_emp * normalized["empowerment"]
             + self.config.lambda_safety * normalized["safety"]
             + self.config.lambda_explore * normalized["explore"]
-        )
+        ).clamp(-3.0, 3.0)
         if return_components:
             raw = {
                 "competence": r_comp.detach(),
@@ -144,3 +144,4 @@ class IntrinsicRewardGenerator:
             }
             return intrinsic, normalized, raw
         return intrinsic
+
