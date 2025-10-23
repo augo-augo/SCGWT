@@ -784,6 +784,7 @@ class TrainingLoop:
             )
             features = self._assemble_features(current_latents["z_self"], broadcast, memory_context)
 
+            self._graph_mark()
             action_dist = self.actor(features)
             dream_action = action_dist.rsample()
             dream_log_prob = action_dist.log_prob(dream_action)
@@ -858,6 +859,7 @@ class TrainingLoop:
             current_latents["z_self"], final_broadcast, memory_context
         )
         # Detach final value prediction, it's a target for GAE
+        self._graph_mark()
         next_value = self.critic(final_features).detach()
 
         rewards_tensor = torch.stack(rewards)
