@@ -243,7 +243,7 @@ class TrainingLoop:
 
     def _autocast_ctx(self):
         if self.autocast_enabled:
-            return autocast(device_type=self.device.type, dtype=self.autocast_dtype)
+            return autocast(dtype=self.autocast_dtype)
         return nullcontext()
 
     def step(
