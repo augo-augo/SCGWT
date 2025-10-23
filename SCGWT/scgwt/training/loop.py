@@ -5,7 +5,6 @@ from typing import Callable
 
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler, autocast
 from scgwt.agents import (
     ActorConfig,
     ActorNetwork,
@@ -51,6 +50,15 @@ def _resolve_compile() -> Callable[[nn.Module], nn.Module]:
 
 
 _maybe_compile = _resolve_compile()
+
+
+def _create_grad_scaler(device_type: str, enabled: bool) -> torch.cuda.amp.GradScaler:
+    try:
+        return torch.amp.GradScaler(device_type=device_type, enabled=enabled)  # type: ignore[attr-defined]
+    except AttributeError:
+        from torch.cuda.amp import GradScaler as LegacyGradScaler  # type: ignore[attr-defined]
+
+        return LegacyGradScaler(enabled=enabled)
 
 
 class RunningMeanStd:
@@ -168,10 +176,7 @@ class TrainingLoop:
         self.workspace = WorkspaceRouter(config.workspace)
         self.memory = EpisodicBuffer(config.episodic_memory)
         empowerment = InfoNCEEmpowermentEstimator(config.empowerment).to(self.device)
-        if self.device.type == "cuda":
-            self.empowerment = _maybe_compile(empowerment)
-        else:
-            self.empowerment = empowerment
+        self.empowerment = empowerment
         self.reward = IntrinsicRewardGenerator(
             config.reward,
             empowerment_estimator=self.empowerment,
@@ -242,12 +247,17 @@ class TrainingLoop:
         self.optimizer = torch.optim.Adam(params, lr=config.optimizer_lr)
         self.optimizer_empowerment_weight = config.optimizer_empowerment_weight
         self.autocast_enabled = self.device.type == "cuda"
-        self.grad_scaler = GradScaler(enabled=self.autocast_enabled)
+        self.grad_scaler = _create_grad_scaler(self.device.type, self.autocast_enabled)
 
     def _autocast_ctx(self):
-        if self.autocast_enabled:
-            return autocast()
-        return nullcontext()
+        if not self.autocast_enabled:
+            return nullcontext()
+        try:
+            return torch.amp.autocast(device_type=self.device.type)
+        except AttributeError:
+            from torch.cuda.amp import autocast as legacy_autocast  # type: ignore[attr-defined]
+
+            return legacy_autocast()
 
     def step(
         self,
@@ -463,8 +473,8 @@ class TrainingLoop:
             self._ucb_counts = torch.ones_like(batch_mean)
         else:
             assert self._ucb_counts is not None
-            self._ucb_counts += 1
-            self._ucb_mean += (batch_mean - self._ucb_mean) / self._ucb_counts
+            self._ucb_counts = self._ucb_counts + 1
+            self._ucb_mean = self._ucb_mean + (batch_mean - self._ucb_mean) / self._ucb_counts
         assert self._ucb_mean is not None and self._ucb_counts is not None
         self._step_count += 1
         ucb_bonus = (

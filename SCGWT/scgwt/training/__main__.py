@@ -127,7 +127,7 @@ def _actor_loop(
         ).unsqueeze(0).to(runtime_device)
         episode_frames = [_frame_to_chw(frame)]
         while not stop_event.is_set():
-            with torch.inference_mode():
+            with torch.no_grad():
                 with policy_lock:
                     policy_result = loop.step(
                         observation_tensor,
@@ -246,7 +246,8 @@ def _actor_loop(
             self_state_vec = next_self_state_vec
             episode_steps = next_episode_steps
     finally:
-        env.close()
+        if hasattr(env, "close"):
+            env.close()
 
 
 def main() -> None:
@@ -405,7 +406,7 @@ def main() -> None:
                             f"Worker {message['worker']} Episode {message['episode']} (info: {message.get('info')})"
                         )
                         wandb.log(
-                            {label: wandb.Video(frames, fps=8, caption=caption)},
+                            {label: wandb.Video(frames, fps=8, format="gif", caption=caption)},
                             step=int(message.get("step", 0)),
                         )
             metrics = loop._optimize()
