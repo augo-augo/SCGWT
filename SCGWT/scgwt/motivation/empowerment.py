@@ -77,7 +77,7 @@ class InfoNCEEmpowermentEstimator(nn.Module):
         if latent.ndim == 1:
             latent = latent.unsqueeze(0)
         device = self._queue.device
-        data = latent.detach().to(device=device, non_blocking=True)
+        data = latent.detach().to(device=device, dtype=self._queue.dtype, non_blocking=True)
         capacity = self._queue.size(0)
         start = int(self._queue_step.item())
         positions = (torch.arange(data.size(0), device=device, dtype=torch.long) + start) % capacity
