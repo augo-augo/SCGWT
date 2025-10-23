@@ -51,7 +51,7 @@ episodic_memory:
   key_dim: 64
 
 rollout_capacity: 4096
-batch_size: 512
+batch_size: 128
 optimizer_lr: 0.001
 optimizer_empowerment_weight: 0.03
 
