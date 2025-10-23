@@ -53,8 +53,12 @@ _maybe_compile = _resolve_compile()
 
 
 def _create_grad_scaler(device_type: str, enabled: bool) -> torch.cuda.amp.GradScaler:
+    if device_type != "cuda":
+        from torch.cuda.amp import GradScaler as LegacyGradScaler  # type: ignore[attr-defined]
+
+        return LegacyGradScaler(enabled=False)
     try:
-        return torch.amp.GradScaler(device_type=device_type, enabled=enabled)  # type: ignore[attr-defined]
+        return torch.amp.GradScaler(enabled=enabled)  # type: ignore[attr-defined]
     except AttributeError:
         from torch.cuda.amp import GradScaler as LegacyGradScaler  # type: ignore[attr-defined]
 
