@@ -16,7 +16,7 @@ authors = [
 dependencies = [
     "torch>=2.3",
     "numpy>=1.26",
-    "faiss-gpu==1.7.2",
+    "faiss-gpu>=1.8",
     "einops>=0.7",
     "tqdm>=4.66",
     "omegaconf>=2.3",
