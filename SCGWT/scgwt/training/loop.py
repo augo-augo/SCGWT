@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from contextlib import nullcontext
+import warnings
 
 import torch
 from torch import nn
@@ -8,8 +9,19 @@ from torch.cuda.amp import GradScaler, autocast
 
 try:
     from torch.compiler import cudagraph_mark_step_begin
-except Exception:
-    cudagraph_mark_step_begin = None
+except (ImportError, AttributeError):
+    try:
+        from torch._inductor.utils import cudagraph_mark_step_begin
+    except (ImportError, AttributeError):
+        try:
+            from torch._dynamo import mark_step_begin as cudagraph_mark_step_begin
+        except (ImportError, AttributeError):
+            warnings.warn(
+                "CUDAGraph safety helpers are unavailable; compiled runs will not "
+                "be protected by cudagraph_mark_step_begin.",
+                RuntimeWarning,
+            )
+            cudagraph_mark_step_begin = None
 from scgwt.agents import (
     ActorConfig,
     ActorNetwork,
