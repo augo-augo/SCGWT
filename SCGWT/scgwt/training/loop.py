@@ -169,6 +169,7 @@ class TrainingLoop:
             ensemble_size=config.world_model_ensemble,
         )
         self.world_model = WorldModelEnsemble(wm_config).to(self.device)
+        self.world_model.clone_outputs = config.compile_model
         self.workspace = WorkspaceRouter(config.workspace)
         self.memory = EpisodicBuffer(config.episodic_memory)
         self.empowerment = InfoNCEEmpowermentEstimator(config.empowerment).to(self.device)
