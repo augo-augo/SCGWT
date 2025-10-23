@@ -556,7 +556,8 @@ class TrainingLoop:
                 and self.self_state_dim > 0
                 and self.self_state_predictor is not None
             ):
-                predicted_state = self.self_state_predictor(latents["z_self"])
+                predictor_input = latents["z_self"].clone()
+                predicted_state = self.self_state_predictor(predictor_input)
                 self_state_loss = torch.nn.functional.mse_loss(predicted_state, self_states)
                 self_state_loss = self.config.workspace.self_bias * self_state_loss
 
