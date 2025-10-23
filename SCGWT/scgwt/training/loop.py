@@ -169,7 +169,17 @@ class TrainingLoop:
             ensemble_size=config.world_model_ensemble,
         )
         self.world_model = WorldModelEnsemble(wm_config).to(self.device)
-        self.world_model.clone_outputs = config.compile_model
+        self._slot_dim = config.encoder.slot_dim
+        self._num_slots = config.encoder.num_slots
+        self._latent_dim = config.dynamics.latent_dim
+        self._ensemble_size = config.world_model_ensemble
+        first_param = next(self.world_model.parameters(), None)
+        self._world_model_param_dtype = (
+            first_param.dtype if first_param is not None else torch.float32
+        )
+        self._latent_buffers: list[dict[str, torch.Tensor]] = []
+        self._latent_buffer_index: int = 0
+        self._prediction_buffer: list[torch.Tensor] | None = None
         self.workspace = WorkspaceRouter(config.workspace)
         self.memory = EpisodicBuffer(config.episodic_memory)
         self.empowerment = InfoNCEEmpowermentEstimator(config.empowerment).to(self.device)
@@ -306,8 +316,8 @@ class TrainingLoop:
         with torch.no_grad():
             with self._autocast_ctx():
                 self._graph_mark()
-                latents = self.world_model(observation)
-                latents = self._clone_latent_tree(latents)
+                latent_buffer = self._next_latent_buffer(batch)
+                latents = self.world_model(observation, output_buffer=latent_buffer)
                 memory_context = self._get_memory_context(latents["z_self"])
                 if action is not None:
                     action_for_routing = action.to(self.device, non_blocking=True)
@@ -352,14 +362,12 @@ class TrainingLoop:
 
                 latent_state = broadcast.mean(dim=1)
                 self._graph_mark()
-                predictions = self.world_model.predict_next_latents(latent_state, action)
-                if self.config.compile_model:
-                    if isinstance(predictions, (list, tuple)):
-                        predictions = type(predictions)(
-                            pred.clone() for pred in predictions
-                        )
-                    else:
-                        predictions = predictions.clone()
+                prediction_buffer = self._prepare_prediction_buffer(
+                    latent_state.size(0), latent_state.dtype
+                )
+                predictions = self.world_model.predict_next_latents(
+                    latent_state, action, output_buffer=prediction_buffer
+                )
                 self._graph_mark()
                 decoded = self.world_model.decode_predictions(predictions)
                 novelty = self.reward.get_novelty(decoded).to(self.device)
@@ -548,8 +556,8 @@ class TrainingLoop:
 
         with self._autocast_ctx():
             self._graph_mark()
-            latents = self.world_model(observations)
-            latents = self._clone_latent_tree(latents)
+            latent_buffer = self._next_latent_buffer(observations.size(0))
+            latents = self.world_model(observations, output_buffer=latent_buffer)
             memory_context = self._get_memory_context(latents["z_self"])
             broadcast, _, _, _, _ = self._route_slots(
                 latents["slots"],
@@ -562,8 +570,12 @@ class TrainingLoop:
             features = self._assemble_features(latents["z_self"], broadcast, memory_context)
 
             self._graph_mark()
-            predictions = self.world_model.predict_next_latents(latent_state, actions)
-            predictions = self._clone_latent_tree(predictions)
+            prediction_buffer = self._prepare_prediction_buffer(
+                latent_state.size(0), latent_state.dtype
+            )
+            predictions = self.world_model.predict_next_latents(
+                latent_state, actions, output_buffer=prediction_buffer
+            )
             self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
             log_likelihoods = torch.stack(
@@ -573,8 +585,8 @@ class TrainingLoop:
             del decoded
 
             self._graph_mark()
-            encoded_next = self.world_model(next_observations)
-            encoded_next = self._clone_latent_tree(encoded_next)
+            next_buffer = self._next_latent_buffer(next_observations.size(0))
+            encoded_next = self.world_model(next_observations, output_buffer=next_buffer)
             predicted_latent = torch.stack(predictions).mean(dim=0)
             target_latent = encoded_next["slots"].mean(dim=1)
             latent_alignment = torch.nn.functional.mse_loss(predicted_latent, target_latent)
@@ -589,8 +601,7 @@ class TrainingLoop:
                 and self.self_state_dim > 0
                 and self.self_state_predictor is not None
             ):
-                predictor_input = latents["z_self"].clone()
-                predicted_state = self.self_state_predictor(predictor_input)
+                predicted_state = self.self_state_predictor(latents["z_self"])
                 self_state_loss = torch.nn.functional.mse_loss(predicted_state, self_states)
                 self_state_loss = self.config.workspace.self_bias * self_state_loss
 
@@ -623,7 +634,7 @@ class TrainingLoop:
     def _stable_dreaming(
         self, latents: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-        current_latents = self._clone_latent_tree(latents)
+        current_latents = latents
         memory_context = self._get_memory_context(current_latents["z_self"])
         actor_losses = []
         critic_losses = []
@@ -638,7 +649,7 @@ class TrainingLoop:
         explore_terms = []
         raw_explore_terms = []
 
-        dream_actions = []
+        last_dream_action: torch.Tensor | None = None
         for step in range(self.config.dream_horizon):
             broadcast, _, _, _, _ = self._route_slots(
                 current_latents["slots"],
@@ -659,12 +670,16 @@ class TrainingLoop:
             dream_action = action_dist.rsample()
             dream_log_prob = action_dist.log_prob(dream_action)
             dream_entropy = action_dist.entropy()
-            dream_actions.append(dream_action.clone())
+            last_dream_action = dream_action.detach()
 
             latent_state = broadcast.mean(dim=1)
             self._graph_mark()
-            predictions = self.world_model.predict_next_latents(latent_state, dream_action)
-            predictions = self._clone_latent_tree(predictions)
+            prediction_buffer = self._prepare_prediction_buffer(
+                latent_state.size(0), latent_state.dtype
+            )
+            predictions = self.world_model.predict_next_latents(
+                latent_state, dream_action, output_buffer=prediction_buffer
+            )
             self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
             novelty = self.reward.get_novelty(decoded)
@@ -701,8 +716,10 @@ class TrainingLoop:
             entropies.append(dream_entropy.clone())
 
             self._graph_mark()
-            current_latents = self.world_model(predicted_obs)
-            current_latents = self._clone_latent_tree(current_latents)
+            next_latent_buffer = self._next_latent_buffer(predicted_obs.size(0))
+            current_latents = self.world_model(
+                predicted_obs, output_buffer=next_latent_buffer
+            )
             del predicted_obs
             memory_context = self._get_memory_context(current_latents["z_self"])
 
@@ -740,8 +757,9 @@ class TrainingLoop:
             self.config.critic_coef * 0.5 * (returns.detach() - values_tensor).pow(2).mean()
         )
 
+        assert last_dream_action is not None
         empowerment_term = self.empowerment(
-            dream_actions[-1].detach(), final_broadcast.mean(dim=1).detach()
+            last_dream_action, final_broadcast.mean(dim=1).detach()
         ).mean()
         dream_loss = -self.optimizer_empowerment_weight * empowerment_term
 
@@ -793,23 +811,74 @@ class TrainingLoop:
         returns = advantages + values
         return advantages, returns
 
+    def _latent_output_dtype(self) -> torch.dtype:
+        return self.autocast_dtype if self.autocast_enabled else self._world_model_param_dtype
+
+    def _create_latent_buffer(
+        self, batch: int, dtype: torch.dtype
+    ) -> dict[str, torch.Tensor]:
+        return {
+            "z_self": torch.empty((batch, self._slot_dim), device=self.device, dtype=dtype),
+            "slots": torch.empty(
+                (batch, self._num_slots, self._slot_dim),
+                device=self.device,
+                dtype=dtype,
+            ),
+        }
+
+    def _ensure_latent_buffers(self, batch: int, dtype: torch.dtype) -> None:
+        need_rebuild = len(self._latent_buffers) != 2
+        if not need_rebuild:
+            for buffer in self._latent_buffers:
+                slots = buffer["slots"]
+                z_self = buffer["z_self"]
+                if (
+                    slots.shape[0] != batch
+                    or slots.dtype != dtype
+                    or slots.device != self.device
+                    or z_self.shape[0] != batch
+                    or z_self.dtype != dtype
+                    or z_self.device != self.device
+                ):
+                    need_rebuild = True
+                    break
+        if need_rebuild:
+            self._latent_buffers = [
+                self._create_latent_buffer(batch, dtype),
+                self._create_latent_buffer(batch, dtype),
+            ]
+            self._latent_buffer_index = 0
+
+    def _next_latent_buffer(self, batch: int) -> dict[str, torch.Tensor]:
+        dtype = self._latent_output_dtype()
+        self._ensure_latent_buffers(batch, dtype)
+        buffer = self._latent_buffers[self._latent_buffer_index]
+        self._latent_buffer_index = (self._latent_buffer_index + 1) % len(
+            self._latent_buffers
+        )
+        return buffer
+
+    def _prepare_prediction_buffer(
+        self, batch: int, dtype: torch.dtype
+    ) -> list[torch.Tensor]:
+        if self._ensemble_size == 0:
+            return []
+        if (
+            self._prediction_buffer is None
+            or len(self._prediction_buffer) != self._ensemble_size
+            or self._prediction_buffer[0].shape[0] != batch
+            or self._prediction_buffer[0].dtype != dtype
+            or self._prediction_buffer[0].device != self.device
+        ):
+            self._prediction_buffer = [
+                torch.empty((batch, self._latent_dim), device=self.device, dtype=dtype)
+                for _ in range(self._ensemble_size)
+            ]
+        return self._prediction_buffer
+
     def _graph_mark(self) -> None:
         if self.config.compile_model and cudagraph_mark_step_begin is not None:
             cudagraph_mark_step_begin()
-
-    def _clone_latent_tree(self, value):
-        if not self.config.compile_model:
-            return value
-        if isinstance(value, torch.Tensor):
-            return value.clone()
-        if isinstance(value, dict):
-            return {key: self._clone_latent_tree(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [self._clone_latent_tree(item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(self._clone_latent_tree(item) for item in value)
-        return value
-
 
 
 
