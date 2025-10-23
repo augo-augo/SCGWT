@@ -834,11 +834,10 @@ class TrainingLoop:
             self._graph_mark()
             critic_value = self.critic(features)
 
-            # Clone required here for GAE calculation later
-            values.append(critic_value.clone())
-            rewards.append(normalized_reward.clone())
-            log_probs.append(dream_log_prob.clone())
-            entropies.append(dream_entropy.clone())
+            values.append(critic_value)
+            rewards.append(normalized_reward)
+            log_probs.append(dream_log_prob)
+            entropies.append(dream_entropy)
 
             self._graph_mark()
             next_latent_buffer = self._next_latent_buffer(batch_size) # Get buffer if needed
@@ -864,7 +863,7 @@ class TrainingLoop:
         )
         # Detach final value prediction, it's a target for GAE
         self._graph_mark()
-        next_value = self.critic(final_features).detach().clone()
+        next_value = self.critic(final_features).detach()
 
         rewards_tensor = torch.stack(rewards)
         values_tensor = torch.stack(values)
