@@ -267,23 +267,29 @@ class TrainingLoop:
         module = getattr(self, attr)
         try:
             return module(*args, **kwargs)
-        except RuntimeError as err:
+        except Exception as err:
             message = str(err).lower()
-            if "symbolically trace a dynamo-optimized function" in message:
-                original = getattr(module, "_orig_mod", None)
-                if original is None:
-                    raise
-                original = original.to(self.device)
-                original.train(module.training)
-                setattr(self, attr, original)
-                try:
-                    import torch._dynamo as _dynamo  # type: ignore[attr-defined]
+            needs_fallback = any(
+                snippet in message
+                for snippet in (
+                    "symbolically trace a dynamo-optimized function",
+                    "autotuner",
+                    "triton",
+                )
+            )
+            original = getattr(module, "_orig_mod", None)
+            if not needs_fallback or original is None:
+                raise
+            original = original.to(self.device)
+            original.train(module.training)
+            setattr(self, attr, original)
+            try:
+                import torch._dynamo as _dynamo  # type: ignore[attr-defined]
 
-                    _dynamo.reset()
-                except Exception:
-                    pass
-                return original(*args, **kwargs)
-            raise
+                _dynamo.reset()
+            except Exception:
+                pass
+            return original(*args, **kwargs)
 
     def step(
         self,
