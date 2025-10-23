@@ -4,7 +4,7 @@ from contextlib import nullcontext
 
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler, autocast\ntry:\n    from torch.compiler import cudagraph_mark_step_begin\nexcept Exception:\n    cudagraph_mark_step_begin = None\n
 from scgwt.agents import (
     ActorConfig,
     ActorNetwork,
@@ -645,9 +645,11 @@ class TrainingLoop:
             log_probs.append(dream_log_prob)
             entropies.append(dream_entropy)
 
+            self._graph_mark()
             current_latents = self.world_model(predicted_obs)
             memory_context = self._get_memory_context(current_latents["z_self"])
 
+        self._graph_mark()
         final_broadcast, _, _, _, _ = self._route_slots(
             current_latents["slots"],
             current_latents["z_self"],
@@ -732,6 +734,11 @@ class TrainingLoop:
             advantages[t] = last_advantage
         returns = advantages + values
         return advantages, returns
+
+
+
+
+
 
 
 
