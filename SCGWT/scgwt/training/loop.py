@@ -294,6 +294,7 @@ class TrainingLoop:
             with self._autocast_ctx():
                 self._graph_mark()
                 latents = self.world_model(observation)
+                latents = self._clone_latent_tree(latents)
                 memory_context = self._get_memory_context(latents["z_self"])
                 if action is not None:
                     action_for_routing = action.to(self.device, non_blocking=True)
@@ -523,6 +524,7 @@ class TrainingLoop:
         with self._autocast_ctx():
             self._graph_mark()
             latents = self.world_model(observations)
+            latents = self._clone_latent_tree(latents)
             memory_context = self._get_memory_context(latents["z_self"])
             broadcast, _, _, _, _ = self._route_slots(
                 latents["slots"],
@@ -543,6 +545,7 @@ class TrainingLoop:
 
             self._graph_mark()
             encoded_next = self.world_model(next_observations)
+            encoded_next = self._clone_latent_tree(encoded_next)
             predicted_latent = torch.stack(predictions).mean(dim=0)
             target_latent = encoded_next["slots"].mean(dim=1)
             latent_alignment = torch.nn.functional.mse_loss(predicted_latent, target_latent)
@@ -753,6 +756,19 @@ class TrainingLoop:
     def _graph_mark(self) -> None:
         if self.config.compile_model and cudagraph_mark_step_begin is not None:
             cudagraph_mark_step_begin()
+
+    def _clone_latent_tree(self, value):
+        if not self.config.compile_model:
+            return value
+        if isinstance(value, torch.Tensor):
+            return value.clone()
+        if isinstance(value, dict):
+            return {key: self._clone_latent_tree(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._clone_latent_tree(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._clone_latent_tree(item) for item in value)
+        return value
 
 
 
