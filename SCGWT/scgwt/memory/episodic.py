@@ -32,9 +32,10 @@ class EpisodicBuffer:
             raise ValueError("key dimension mismatch")
         if len(self) >= self.config.capacity:
             self._evict_oldest()
-        batch = key.shape[0]
-        self.index.add(key.detach().cpu().numpy())
-        for row in value.detach():
+        key_cpu = key.detach().to(dtype=torch.float32, device="cpu")
+        value_cpu = value.detach().to(dtype=torch.float32, device="cpu")
+        self.index.add(key_cpu.numpy())
+        for row in value_cpu:
             self.values[self.next_id] = row
             self.next_id += 1
 
@@ -42,12 +43,13 @@ class EpisodicBuffer:
         if query.ndim != 2:
             raise ValueError("query must be shape [batch, key_dim]")
         target_device = query.device
-        distances, indices = self.index.search(query.detach().cpu().numpy(), k)
-        fallback = torch.zeros_like(query[0]).cpu()
+        query_cpu = query.detach().to(dtype=torch.float32, device="cpu")
+        distances, indices = self.index.search(query_cpu.numpy(), k)
+        fallback = torch.zeros_like(query_cpu[0])
         retrieved_cpu = [self.values.get(idx, fallback) for idx in indices.flatten()]
         stacked_cpu = torch.stack(retrieved_cpu).view(query.shape[0], k, -1)
-        values = stacked_cpu.to(target_device)
-        distances_tensor = torch.from_numpy(distances).to(target_device)
+        values = stacked_cpu.to(target_device, dtype=query.dtype)
+        distances_tensor = torch.from_numpy(distances).to(target_device, dtype=torch.float32)
         return distances_tensor, values
 
     def _evict_oldest(self) -> None:

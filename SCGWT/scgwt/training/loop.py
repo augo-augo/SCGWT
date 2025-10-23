@@ -481,9 +481,14 @@ class TrainingLoop:
     def _get_memory_context(self, keys: torch.Tensor) -> torch.Tensor:
         batch = keys.shape[0]
         if len(self.memory) == 0:
-            return torch.zeros(batch, self.memory.config.key_dim, device=self.device)
+            return torch.zeros(
+                batch,
+                self.memory.config.key_dim,
+                device=self.device,
+                dtype=keys.dtype,
+            )
         _, values = self.memory.read(keys)
-        context = values[:, 0, :].to(self.device)
+        context = values[:, 0, :].to(self.device, dtype=keys.dtype)
         return context
 
     def _write_memory(self, z_self: torch.Tensor, slots: torch.Tensor) -> None:
