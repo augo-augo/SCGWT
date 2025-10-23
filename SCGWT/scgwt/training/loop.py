@@ -288,6 +288,7 @@ class TrainingLoop:
 
 
         compiled_world_model = False
+        compiled_any_module = False
         if config.compile_model:
             modules_to_compile = {"world_model": self.world_model,
                                   "actor": self.actor,
@@ -301,15 +302,17 @@ class TrainingLoop:
                     was_compiled = _is_compiled_artifact(original_module, compiled_module)
                     print(f"Compiling {name}... Success: {was_compiled}")
                     setattr(self, name, compiled_module)
-                    if name == "world_model" and was_compiled:
-                        compiled_world_model = True
+                    if was_compiled:
+                        compiled_any_module = True
+                        if name == "world_model":
+                            compiled_world_model = True
                 except Exception as e:
                     print(f"Failed to compile {name}: {e}")
                     setattr(self, name, original_module)
 
-        self._compiled_runtime = compiled_world_model
-        # Use buffers ONLY if compiling successfully
-        self._use_output_buffers = self._compiled_runtime # Tie buffer usage to successful compilation
+        self._compiled_runtime = compiled_any_module
+        # Use buffers ONLY if the world model compiled successfully
+        self._use_output_buffers = compiled_world_model
 
         self._slot_baseline: torch.Tensor | None = None
         self._ucb_mean: torch.Tensor | None = None
@@ -720,6 +723,7 @@ class TrainingLoop:
 
             self_state_loss = torch.tensor(0.0, device=self.device, dtype=world_model_loss.dtype)
             if self_states is not None and self.self_state_predictor is not None:
+                self._graph_mark()
                 predicted_self_state = self.self_state_predictor(latents["z_self"].detach()) # Detach input? Might prevent grad flow to encoder
                 self_state_pred_loss = torch.nn.functional.mse_loss(predicted_self_state, self_states)
                 self_state_loss = self.config.workspace.self_bias * self_state_pred_loss
