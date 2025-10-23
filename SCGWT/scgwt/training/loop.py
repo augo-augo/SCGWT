@@ -4,7 +4,12 @@ from contextlib import nullcontext
 
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler, autocast\ntry:\n    from torch.compiler import cudagraph_mark_step_begin\nexcept Exception:\n    cudagraph_mark_step_begin = None\n
+from torch.cuda.amp import GradScaler, autocast
+
+try:
+    from torch.compiler import cudagraph_mark_step_begin
+except Exception:
+    cudagraph_mark_step_begin = None
 from scgwt.agents import (
     ActorConfig,
     ActorNetwork,
