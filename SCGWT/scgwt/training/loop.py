@@ -487,8 +487,9 @@ class TrainingLoop:
         return context
 
     def _write_memory(self, z_self: torch.Tensor, slots: torch.Tensor) -> None:
-        key = z_self.detach().cpu()
-        value = slots.mean(dim=1).detach().cpu()
+        # FAISS backing the episodic buffer only accepts float32 host tensors.
+        key = z_self.detach().to(dtype=torch.float32, device="cpu")
+        value = slots.mean(dim=1).detach().to(dtype=torch.float32, device="cpu")
         self.memory.write(key, value)
 
     def _assemble_features(
