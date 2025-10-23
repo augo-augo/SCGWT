@@ -550,13 +550,7 @@ class TrainingLoop:
 
             self._graph_mark()
             predictions = self.world_model.predict_next_latents(latent_state, actions)
-            if self.config.compile_model:
-                if isinstance(predictions, (list, tuple)):
-                    predictions = type(predictions)(
-                        pred.clone() for pred in predictions
-                    )
-                else:
-                    predictions = predictions.clone()
+            predictions = self._clone_latent_tree(predictions)
             self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
             log_likelihoods = torch.stack(
@@ -657,13 +651,7 @@ class TrainingLoop:
             latent_state = broadcast.mean(dim=1)
             self._graph_mark()
             predictions = self.world_model.predict_next_latents(latent_state, dream_action)
-            if self.config.compile_model:
-                if isinstance(predictions, (list, tuple)):
-                    predictions = type(predictions)(
-                        pred.clone() for pred in predictions
-                    )
-                else:
-                    predictions = predictions.clone()
+            predictions = self._clone_latent_tree(predictions)
             self._graph_mark()
             decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
             novelty = self.reward.get_novelty(decoded)

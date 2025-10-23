@@ -75,6 +75,6 @@ world_model_ensemble: 3
 device: cuda
 precision: bf16
 log_every_steps: 200
-log_images: false
+log_images: true
 channels_last: true
 compile_model: true
