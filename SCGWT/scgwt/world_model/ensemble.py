@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Iterable, List, MutableMapping, MutableSequence
+from typing import Iterable
 
 import torch
 from torch import nn
@@ -43,8 +43,8 @@ class WorldModelEnsemble(nn.Module):
     def forward(
         self,
         observation: torch.Tensor,
-        output_buffer: MutableMapping[str, torch.Tensor] | None = None,
-    ) -> MutableMapping[str, torch.Tensor]:
+        output_buffer: dict[str, torch.Tensor] | None = None,
+    ) -> dict[str, torch.Tensor]:
         """Encode an observation into a dict of latent slots."""
         return self.encoder(observation, output_buffer=output_buffer)
 
@@ -52,8 +52,8 @@ class WorldModelEnsemble(nn.Module):
         self,
         latent_state: torch.Tensor,
         action: torch.Tensor,
-        output_buffer: MutableSequence[torch.Tensor] | None = None,
-    ) -> MutableSequence[torch.Tensor]:
+        output_buffer: list[torch.Tensor] | None = None,
+    ) -> list[torch.Tensor]:
         """Run the ensemble forward to obtain next-state predictions."""
         if output_buffer is None:
             return [model(latent_state, action) for model in self.dynamics_models]
@@ -62,12 +62,12 @@ class WorldModelEnsemble(nn.Module):
             raise ValueError("output_buffer length must match ensemble size")
 
         for dest, model in zip(output_buffer, self.dynamics_models):
-            dest.copy_(model(latent_state, action))
+            model(latent_state, action, output_buffer=dest)
         return output_buffer
 
     def decode_predictions(
         self, predicted_latents: Iterable[torch.Tensor], use_frozen: bool = True
-    ) -> List[torch.distributions.Distribution]:
+    ) -> list[torch.distributions.Distribution]:
         """Decode predicted latent states into observation distributions."""
         decoder = self.frozen_decoder if use_frozen else self.decoder
         return [decoder(latent) for latent in predicted_latents]
