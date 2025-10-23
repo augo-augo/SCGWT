@@ -5,7 +5,12 @@ import warnings
 
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
+
+try:
+    from torch._dynamo.eval_frame import OptimizedModule as _OptimizedModuleType
+except (ImportError, AttributeError):
+    _OptimizedModuleType = ()
 
 try:
     from torch.compiler import cudagraph_mark_step_begin
@@ -146,6 +151,16 @@ class TrainingConfig:
     compile_model: bool = False
 
 
+def _is_compiled_artifact(original: nn.Module, candidate: nn.Module) -> bool:
+    """Best-effort detection that ``torch.compile`` wrapped the module."""
+
+    if isinstance(candidate, _OptimizedModuleType):
+        return True
+    if candidate is original:
+        return False
+    return hasattr(candidate, "graph_module") or hasattr(candidate, "original_module")
+
+
 class TrainingLoop:
     """High-level container wiring the major subsystems together."""
 
@@ -233,6 +248,7 @@ class TrainingLoop:
                     if parameter.ndim >= 4:
                         parameter.data = parameter.data.contiguous(memory_format=torch.channels_last)
 
+        compiled_world_model = False
         if config.compile_model:
             for name in ("world_model", "actor", "critic"):
                 module = getattr(self, name)
@@ -240,7 +256,12 @@ class TrainingLoop:
                     compiled = torch.compile(module, mode="max-autotune", fullgraph=False)
                 except Exception:
                     compiled = module
+                else:
+                    if name == "world_model" and _is_compiled_artifact(module, compiled):
+                        compiled_world_model = True
                 setattr(self, name, compiled)
+        self._compiled_runtime = compiled_world_model
+        self._use_output_buffers = not config.compile_model
 
         self._slot_baseline: torch.Tensor | None = None
         self._ucb_mean: torch.Tensor | None = None
@@ -265,13 +286,15 @@ class TrainingLoop:
         except (TypeError, ValueError):
             self.optimizer = torch.optim.AdamW(params, lr=config.optimizer_lr)
         self.optimizer_empowerment_weight = config.optimizer_empowerment_weight
+        scaler_device_type = "cuda" if self.device.type == "cuda" else "cpu"
         self.grad_scaler = GradScaler(
-            enabled=self.autocast_enabled and self.autocast_dtype == torch.float16
+            device_type=scaler_device_type,
+            enabled=self.autocast_enabled and self.autocast_dtype == torch.float16,
         )
 
     def _autocast_ctx(self):
         if self.autocast_enabled:
-            return autocast(dtype=self.autocast_dtype)
+            return autocast(device_type=self.device.type, dtype=self.autocast_dtype)
         return nullcontext()
 
     def step(
@@ -317,7 +340,10 @@ class TrainingLoop:
             with self._autocast_ctx():
                 self._graph_mark()
                 latent_buffer = self._next_latent_buffer(batch)
-                latents = self.world_model(observation, output_buffer=latent_buffer)
+                latents = self.world_model(
+                    observation, output_buffer=latent_buffer
+                )
+                latents = self._fresh_latents(latents)
                 memory_context = self._get_memory_context(latents["z_self"])
                 if action is not None:
                     action_for_routing = action.to(self.device, non_blocking=True)
@@ -368,6 +394,7 @@ class TrainingLoop:
                 predictions = self.world_model.predict_next_latents(
                     latent_state, action, output_buffer=prediction_buffer
                 )
+                predictions = self._fresh_predictions(predictions)
                 self._graph_mark()
                 decoded = self.world_model.decode_predictions(predictions)
                 novelty = self.reward.get_novelty(decoded).to(self.device)
@@ -842,6 +869,8 @@ class TrainingLoop:
         }
 
     def _ensure_latent_buffers(self, batch: int, dtype: torch.dtype) -> None:
+        if not self._use_output_buffers:
+            return
         need_rebuild = len(self._latent_buffers) != 2
         if not need_rebuild:
             for buffer in self._latent_buffers:
@@ -864,7 +893,9 @@ class TrainingLoop:
             ]
             self._latent_buffer_index = 0
 
-    def _next_latent_buffer(self, batch: int) -> dict[str, torch.Tensor]:
+    def _next_latent_buffer(self, batch: int) -> dict[str, torch.Tensor] | None:
+        if not self._use_output_buffers:
+            return None
         dtype = self._latent_output_dtype()
         self._ensure_latent_buffers(batch, dtype)
         buffer = self._latent_buffers[self._latent_buffer_index]
@@ -875,9 +906,11 @@ class TrainingLoop:
 
     def _prepare_prediction_buffer(
         self, batch: int, dtype: torch.dtype
-    ) -> list[torch.Tensor]:
+    ) -> list[torch.Tensor] | None:
         if self._ensemble_size == 0:
             return []
+        if not self._use_output_buffers:
+            return None
         if (
             self._prediction_buffer is None
             or len(self._prediction_buffer) != self._ensemble_size
@@ -892,7 +925,7 @@ class TrainingLoop:
         return self._prediction_buffer
 
     def _graph_mark(self) -> None:
-        if self.config.compile_model and cudagraph_mark_step_begin is not None:
+        if self._compiled_runtime and cudagraph_mark_step_begin is not None:
             cudagraph_mark_step_begin()
 
 
