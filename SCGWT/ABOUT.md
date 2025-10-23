@@ -43,6 +43,7 @@ Immediate next steps:
 - Wired the Crafter survival runner (`scgwt/training/__main__.py`) into Weights & Biases with per-step vitals, optimizer diagnostics, and episode video logging for experiment tracking.
 - Hardened early training stability with intrinsic-reward normalization and mixed-precision optimisation (reward clipping + AMP with grad scaling) to pre-empt NaN or OOM failures.
 - Introduced an exploration bonus term derived from ensemble disagreement to encourage broader search without destabilising competence/empowerment balances.
+- Normalized each intrinsic drive (competence/empowerment/safety/explore) with running statistics so reward weights remain balanced across training phases.
 
 ## **2. Core Principles**
 
@@ -279,3 +280,4 @@ The agent cannot be trained on its full objective from scratch.
       * **Environment:** Complex, open-ended 3D simulation or language-based world.
       * **Goal:** Observe emergent, self-driven, stable behavior.
       * **Metrics:** Stable, non-zero $R_{comp}$ and $R_{emp}$. Does the agent explore, practice, and maintain itself without explicit instruction? Does it avoid wireheading pathologies?
+

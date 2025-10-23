@@ -196,6 +196,14 @@ def main() -> None:
                 if isinstance(info.get("achievements"), dict):
                     step_metrics["crafter_stats/achievements_unlocked"] = len(info["achievements"])
             if policy_result.reward_components is not None:
+                explore_tensor = policy_result.reward_components["explore"]
+                explore_value = float(explore_tensor.mean().item())
+                raw_components = policy_result.raw_reward_components or {}
+                raw_explore_value = (
+                    float(raw_components["explore"].mean().item())
+                    if "explore" in raw_components
+                    else explore_value
+                )
                 step_metrics.update(
                     {
                         "step/reward_competence": float(
@@ -207,9 +215,8 @@ def main() -> None:
                         "step/reward_safety": float(
                             policy_result.reward_components["safety"].mean().item()
                         ),
-                        "step/reward_explore": float(
-                            policy_result.reward_components["explore"].mean().item()
-                        ),
+                        "step/reward_explore_raw": raw_explore_value,
+                        "step/reward_explore": float(max(explore_value, 0.0)),
                     }
                 )
             state_names = ["health_norm", "food_norm", "energy_step", "is_sleeping"]
@@ -290,3 +297,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+

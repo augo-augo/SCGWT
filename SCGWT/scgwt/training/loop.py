@@ -91,6 +91,7 @@ class StepResult:
     observation_entropy: torch.Tensor
     slot_scores: torch.Tensor
     reward_components: dict[str, torch.Tensor] | None = None
+    raw_reward_components: dict[str, torch.Tensor] | None = None
     training_loss: float | None = None
     training_metrics: dict[str, float] | None = None
 
@@ -300,23 +301,13 @@ class TrainingLoop:
                 decoded = self.world_model.decode_predictions(predictions)
                 novelty = self.reward.get_novelty(decoded).to(self.device)
                 observation_entropy = estimate_observation_entropy(observation)
-                (
-                    intrinsic_raw,
-                    r_comp,
-                    r_emp,
-                    r_safe,
-                    r_explore,
-                ) = self.reward.get_intrinsic_reward(
+                intrinsic_raw, norm_components, raw_components = self.reward.get_intrinsic_reward(
                     novelty, observation_entropy, action, latent_state, return_components=True
                 )
 
         intrinsic = self.reward_normalizer(intrinsic_raw)
-        reward_components = {
-            "competence": r_comp.detach(),
-            "empowerment": r_emp.detach(),
-            "safety": r_safe.detach(),
-            "explore": r_explore.detach(),
-        }
+        reward_components = {key: value.detach() for key, value in norm_components.items()}
+        raw_reward_components = {key: value.detach() for key, value in raw_components.items()}
         self._write_memory(latents["z_self"], broadcast)
 
         train_loss: float | None = None
@@ -355,6 +346,7 @@ class TrainingLoop:
             observation_entropy=observation_entropy.detach(),
             slot_scores=scores.detach(),
             reward_components=reward_components,
+            raw_reward_components=raw_reward_components,
             training_loss=train_loss,
             training_metrics=training_metrics,
         )
@@ -563,6 +555,7 @@ class TrainingLoop:
         safety_terms = []
         intrinsic_terms = []
         explore_terms = []
+        raw_explore_terms = []
 
         dream_actions = []
         for step in range(self.config.dream_horizon):
@@ -592,24 +585,24 @@ class TrainingLoop:
             novelty = self.reward.get_novelty(decoded)
             predicted_obs = decoded[0].rsample()
             observation_entropy = estimate_observation_entropy(predicted_obs)
-            (
-                dream_reward,
-                dream_comp,
-                dream_emp,
-                dream_safe,
-                dream_explore,
-            ) = self.reward.get_intrinsic_reward(
+            dream_reward, norm_components, raw_components = self.reward.get_intrinsic_reward(
                 novelty,
                 observation_entropy,
                 dream_action,
                 latent_state,
                 return_components=True,
             )
+            dream_comp = norm_components["competence"]
+            dream_emp = norm_components["empowerment"]
+            dream_safe = norm_components["safety"]
+            dream_explore = norm_components["explore"]
+            raw_explore = raw_components["explore"]
             competence_terms.append(dream_comp.detach().mean())
             empowerment_terms.append(dream_emp.detach().mean())
             safety_terms.append(dream_safe.detach().mean())
             intrinsic_terms.append(dream_reward.detach().mean())
             explore_terms.append(dream_explore.detach().mean())
+            raw_explore_terms.append(raw_explore.detach().mean())
 
             normalized_reward = self.reward_normalizer(dream_reward)
 
@@ -664,6 +657,7 @@ class TrainingLoop:
         empowerment_stack = torch.stack(empowerment_terms)
         safety_stack = torch.stack(safety_terms)
         explore_stack = torch.stack(explore_terms)
+        raw_explore_stack = torch.stack(raw_explore_terms)
 
         dreaming_metrics = {
             "dream/intrinsic_reward": intrinsic_stack.mean().detach(),
@@ -674,6 +668,9 @@ class TrainingLoop:
             "dream/explore": explore_stack.mean().detach(),
             "dream/explore_min": explore_stack.min().detach(),
             "dream/explore_max": explore_stack.max().detach(),
+            "dream/explore_raw": raw_explore_stack.mean().detach(),
+            "dream/explore_raw_min": raw_explore_stack.min().detach(),
+            "dream/explore_raw_max": raw_explore_stack.max().detach(),
         }
 
         return dream_loss, actor_loss, critic_loss, dreaming_metrics
@@ -702,3 +699,8 @@ class TrainingLoop:
             advantages[t] = last_advantage
         returns = advantages + values
         return advantages, returns
+
+
+
+
+

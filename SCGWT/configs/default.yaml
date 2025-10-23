@@ -34,10 +34,10 @@ reward:
   novelty_high: 1.5
   anxiety_penalty: 0.5
   safety_entropy_floor: 0.1
-  lambda_comp: 0.5
+  lambda_comp: 0.7
   lambda_emp: 0.3
-  lambda_safety: 0.2
-  lambda_explore: 0.1
+  lambda_safety: 0.3
+  lambda_explore: 0.5
 
 empowerment:
   latent_dim: 64
