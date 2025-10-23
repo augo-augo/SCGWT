@@ -70,7 +70,7 @@ class IntrinsicRewardGenerator:
         r_comp = self.get_competence(novelty)
         r_emp = self.empowerment_estimator(action, latent)
         r_safe = self.get_safety(observation_entropy)
-        r_explore = novelty.detach()
+        r_explore = torch.clamp(novelty.detach(), min=0.0)
         batch = action.shape[0]
         if r_comp.ndim == 0:
             r_comp = r_comp.expand(batch)

@@ -659,13 +659,21 @@ class TrainingLoop:
         ).mean()
         dream_loss = -self.optimizer_empowerment_weight * empowerment_term
 
+        intrinsic_stack = torch.stack(intrinsic_terms)
+        competence_stack = torch.stack(competence_terms)
+        empowerment_stack = torch.stack(empowerment_terms)
+        safety_stack = torch.stack(safety_terms)
+        explore_stack = torch.stack(explore_terms)
+
         dreaming_metrics = {
-            "dream/intrinsic_reward": torch.stack(intrinsic_terms).mean().detach(),
-            "dream/competence": torch.stack(competence_terms).mean().detach(),
-            "dream/empowerment": torch.stack(empowerment_terms).mean().detach(),
-            "dream/safety": torch.stack(safety_terms).mean().detach(),
+            "dream/intrinsic_reward": intrinsic_stack.mean().detach(),
+            "dream/competence": competence_stack.mean().detach(),
+            "dream/empowerment": empowerment_stack.mean().detach(),
+            "dream/safety": safety_stack.mean().detach(),
             "dream/policy_entropy": entropies_tensor.mean().detach(),
-            "dream/explore": torch.stack(explore_terms).mean().detach(),
+            "dream/explore": explore_stack.mean().detach(),
+            "dream/explore_min": explore_stack.min().detach(),
+            "dream/explore_max": explore_stack.max().detach(),
         }
 
         return dream_loss, actor_loss, critic_loss, dreaming_metrics
