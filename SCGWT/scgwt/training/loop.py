@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from contextlib import nullcontext
+from typing import Callable
 
 import torch
 from torch import nn
@@ -29,6 +30,27 @@ from scgwt.world_model import (
     WorldModelEnsemble,
 )
 from .buffer import RolloutBuffer
+
+
+def _resolve_compile() -> Callable[[nn.Module], nn.Module]:
+    compile_fn = getattr(torch, "compile", None)
+    if not callable(compile_fn):
+        return lambda module: module
+    try:
+        import torch._dynamo as _dynamo  # type: ignore[attr-defined]
+
+        _dynamo.config.suppress_errors = True
+    except Exception:
+        pass
+    def _compiler(module: nn.Module) -> nn.Module:
+        try:
+            return compile_fn(module)  # type: ignore[misc]
+        except Exception:
+            return module
+    return _compiler
+
+
+_maybe_compile = _resolve_compile()
 
 
 class RunningMeanStd:
@@ -138,10 +160,18 @@ class TrainingLoop:
             dynamics=config.dynamics,
             ensemble_size=config.world_model_ensemble,
         )
-        self.world_model = WorldModelEnsemble(wm_config).to(self.device)
+        world_model = WorldModelEnsemble(wm_config).to(self.device)
+        if self.device.type == "cuda":
+            self.world_model = _maybe_compile(world_model)
+        else:
+            self.world_model = world_model
         self.workspace = WorkspaceRouter(config.workspace)
         self.memory = EpisodicBuffer(config.episodic_memory)
-        self.empowerment = InfoNCEEmpowermentEstimator(config.empowerment).to(self.device)
+        empowerment = InfoNCEEmpowermentEstimator(config.empowerment).to(self.device)
+        if self.device.type == "cuda":
+            self.empowerment = _maybe_compile(empowerment)
+        else:
+            self.empowerment = empowerment
         self.reward = IntrinsicRewardGenerator(
             config.reward,
             empowerment_estimator=self.empowerment,
@@ -155,7 +185,7 @@ class TrainingLoop:
             + slot_dim * config.workspace.broadcast_slots
             + config.episodic_memory.key_dim
         )
-        self.actor = ActorNetwork(
+        actor_net = ActorNetwork(
             ActorConfig(
                 latent_dim=policy_feature_dim,
                 action_dim=config.dynamics.action_dim,
@@ -164,7 +194,7 @@ class TrainingLoop:
                 dropout=config.actor.dropout,
             )
         ).to(self.device)
-        self.critic = CriticNetwork(
+        critic_net = CriticNetwork(
             CriticConfig(
                 latent_dim=policy_feature_dim,
                 hidden_dim=config.critic.hidden_dim,
@@ -172,6 +202,12 @@ class TrainingLoop:
                 dropout=config.critic.dropout,
             )
         ).to(self.device)
+        if self.device.type == "cuda":
+            self.actor = _maybe_compile(actor_net)
+            self.critic = _maybe_compile(critic_net)
+        else:
+            self.actor = actor_net
+            self.critic = critic_net
 
         self.self_state_dim = config.self_state_dim
         if self.self_state_dim > 0:
@@ -310,34 +346,15 @@ class TrainingLoop:
         raw_reward_components = {key: value.detach() for key, value in raw_components.items()}
         self._write_memory(latents["z_self"], broadcast)
 
+        if train and next_observation is not None:
+            self.store_transition(
+                observation=observation,
+                action=action,
+                next_observation=next_observation,
+                self_state=state_tensor,
+            )
         train_loss: float | None = None
         training_metrics: dict[str, float] | None = None
-        if train and next_observation is not None:
-            obs_cpu = observation.detach().to("cpu", non_blocking=True).contiguous()
-            act_cpu = action.detach().to("cpu", non_blocking=True).contiguous()
-            next_cpu = next_observation.detach().to("cpu", non_blocking=True).contiguous()
-            state_cpu = (
-                state_tensor.detach().to("cpu", non_blocking=True).contiguous()
-                if state_tensor is not None
-                else None
-            )
-            if torch.cuda.is_available():
-                obs_cpu = obs_cpu.pin_memory()
-                act_cpu = act_cpu.pin_memory()
-                next_cpu = next_cpu.pin_memory()
-                if state_cpu is not None:
-                    state_cpu = state_cpu.pin_memory()
-            batch_items = obs_cpu.shape[0]
-            for idx in range(batch_items):
-                self.rollout_buffer.push(
-                    obs_cpu[idx],
-                    act_cpu[idx],
-                    next_cpu[idx],
-                    state_cpu[idx] if state_cpu is not None else None,
-                )
-            training_metrics = self._optimize()
-            if training_metrics is not None:
-                train_loss = training_metrics.get("train/total_loss")
 
         return StepResult(
             action=action.detach(),
@@ -350,6 +367,37 @@ class TrainingLoop:
             training_loss=train_loss,
             training_metrics=training_metrics,
         )
+
+    def store_transition(
+        self,
+        observation: torch.Tensor,
+        action: torch.Tensor,
+        next_observation: torch.Tensor,
+        self_state: torch.Tensor | None = None,
+    ) -> None:
+        obs_cpu = observation.detach().to("cpu", non_blocking=True).contiguous()
+        act_cpu = action.detach().to("cpu", non_blocking=True).contiguous()
+        next_cpu = next_observation.detach().to("cpu", non_blocking=True).contiguous()
+        state_cpu = (
+            self_state.detach().to("cpu", non_blocking=True).contiguous()
+            if self_state is not None
+            else None
+        )
+        if torch.cuda.is_available():
+            obs_cpu = obs_cpu.pin_memory()
+            act_cpu = act_cpu.pin_memory()
+            next_cpu = next_cpu.pin_memory()
+            if state_cpu is not None:
+                state_cpu = state_cpu.pin_memory()
+
+        batch_items = obs_cpu.shape[0]
+        for idx in range(batch_items):
+            self.rollout_buffer.push(
+                obs_cpu[idx],
+                act_cpu[idx],
+                next_cpu[idx],
+                state_cpu[idx] if state_cpu is not None else None,
+            )
 
     def _route_slots(
         self,

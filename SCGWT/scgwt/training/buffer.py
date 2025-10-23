@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from collections import deque
 from typing import Deque, Tuple
+import threading
 
 import torch
 
@@ -17,6 +18,7 @@ class RolloutBuffer:
         self._storage: Deque[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]] = deque(
             maxlen=capacity
         )
+        self._lock = threading.Lock()
 
     def push(
         self,
@@ -25,16 +27,18 @@ class RolloutBuffer:
         next_observation: torch.Tensor,
         self_state: torch.Tensor | None = None,
     ) -> None:
-        self._storage.append((observation, action, next_observation, self_state))
+        with self._lock:
+            self._storage.append((observation, action, next_observation, self_state))
 
     def sample(
         self, batch_size: int
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        if len(self._storage) < batch_size:
-            raise ValueError("Not enough samples in buffer for requested batch size")
-        batch = random.sample(self._storage, batch_size)
+        with self._lock:
+            if len(self._storage) < batch_size:
+                raise ValueError("Not enough samples in buffer for requested batch size")
+            batch = random.sample(self._storage, batch_size)
         observations, actions, next_observations, self_states = zip(*batch)
         state_tensor: torch.Tensor | None
         if self_states[0] is None:
@@ -62,4 +66,5 @@ class RolloutBuffer:
         )
 
     def __len__(self) -> int:
-        return len(self._storage)
+        with self._lock:
+            return len(self._storage)

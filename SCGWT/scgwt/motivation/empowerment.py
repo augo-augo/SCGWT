@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
-from typing import Deque
 
 import torch
 from torch import nn
@@ -36,8 +34,9 @@ class InfoNCEEmpowermentEstimator(nn.Module):
             nn.Linear(config.hidden_dim, config.hidden_dim),
         )
         self.temperature = nn.Parameter(torch.tensor(config.temperature))
-        self.register_buffer("step", torch.zeros(1, dtype=torch.long))
-        self._queue: Deque[torch.Tensor] = deque(maxlen=config.queue_capacity)
+        self.register_buffer("_queue", torch.zeros(config.queue_capacity, config.latent_dim))
+        self.register_buffer("_queue_step", torch.zeros(1, dtype=torch.long))
+        self.register_buffer("_queue_count", torch.zeros(1, dtype=torch.long))
 
     def forward(self, action: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:
         """
@@ -58,17 +57,31 @@ class InfoNCEEmpowermentEstimator(nn.Module):
         return -loss  # Higher reward for lower InfoNCE loss.
 
     def _collect_negatives(self, latent: torch.Tensor) -> torch.Tensor:
-        batch, dim = latent.shape
-        if not self._queue:
+        batch, _ = latent.shape
+        available = int(self._queue_count.item())
+        if available == 0:
             return self.latent_proj(latent.detach()).unsqueeze(1)
-        negatives = []
-        queue_tensor = torch.stack(list(self._queue)).to(latent.device)
-        idx = torch.randint(0, queue_tensor.size(0), (batch,), device=latent.device)
-        sampled = queue_tensor[idx].detach()
+        capacity = self._queue.size(0)
+        limit = min(available, capacity)
+        queue_tensor = self._queue[:limit]
+        if queue_tensor.device != latent.device:
+            queue_tensor = queue_tensor.to(latent.device, non_blocking=True)
+        idx = torch.randint(0, limit, (batch,), device=latent.device)
+        sampled = queue_tensor.index_select(0, idx).detach()
         embedded = self.latent_proj(sampled)
-        negatives.append(embedded.unsqueeze(1))
-        return torch.cat(negatives, dim=1)
+        return embedded.unsqueeze(1)
 
     def _enqueue_latents(self, latent: torch.Tensor) -> None:
-        for row in latent:
-            self._queue.append(row.cpu())
+        if latent.numel() == 0:
+            return
+        if latent.ndim == 1:
+            latent = latent.unsqueeze(0)
+        device = self._queue.device
+        data = latent.detach().to(device=device, non_blocking=True)
+        capacity = self._queue.size(0)
+        start = int(self._queue_step.item())
+        positions = (torch.arange(data.size(0), device=device, dtype=torch.long) + start) % capacity
+        self._queue.index_copy_(0, positions, data.detach())
+        self._queue_step.add_(data.size(0))
+        self._queue_count.add_(data.size(0))
+        self._queue_count.clamp_(max=capacity)

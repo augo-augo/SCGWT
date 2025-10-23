@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import threading
+import time
 from pathlib import Path
-from typing import List, Tuple
+from queue import Empty, Queue
+from typing import Dict, List, Tuple
 
 import crafter
 import numpy as np
@@ -90,6 +93,162 @@ def _select_env_action(action_tensor: torch.Tensor, action_space_n: int) -> int:
     return index % action_space_n
 
 
+def _actor_loop(
+    worker_id: int,
+    loop: TrainingLoop,
+    config,
+    runtime_device: torch.device,
+    max_steps: int,
+    log_interval: int,
+    steps_lock: threading.Lock,
+    policy_lock: threading.Lock,
+    shared_state: Dict[str, int],
+    stop_event: threading.Event,
+    metrics_queue: Queue,
+    seed: int,
+) -> None:
+    env = crafter.Env()
+    try:
+        if hasattr(env, "seed"):
+            env.seed(seed)
+        episode_frames: List[np.ndarray] = []
+        episode_steps = 0
+        observation = env.reset()
+        frame = observation
+        observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape, runtime_device)
+        with steps_lock:
+            shared_state["episodes"] += 1
+            episode_id = shared_state["episodes"]
+        self_state_vec = _compute_self_state(
+            info=None,
+            step_count=episode_steps,
+            horizon=max_steps,
+            state_dim=config.self_state_dim,
+        ).unsqueeze(0).to(runtime_device)
+        episode_frames = [_frame_to_chw(frame)]
+        while not stop_event.is_set():
+            with torch.inference_mode():
+                with policy_lock:
+                    policy_result = loop.step(
+                        observation_tensor,
+                        self_state=self_state_vec if self_state_vec.numel() > 0 else None,
+                        train=False,
+                    )
+            env_action = _select_env_action(policy_result.action, env.action_space.n)
+            next_observation, env_reward, terminated, info = env.step(env_action)
+            truncated = False
+            next_tensor = _preprocess_frame(
+                next_observation, config.encoder.observation_shape, runtime_device
+            )
+            loop.store_transition(
+                observation_tensor,
+                policy_result.action,
+                next_tensor,
+                self_state_vec if self_state_vec.numel() > 0 else None,
+            )
+            next_episode_steps = episode_steps + 1
+            next_self_state_vec = _compute_self_state(
+                info,
+                next_episode_steps,
+                max_steps,
+                config.self_state_dim,
+            ).unsqueeze(0).to(runtime_device)
+            episode_frames.append(_frame_to_chw(next_observation))
+            with steps_lock:
+                if shared_state["steps"] >= max_steps:
+                    stop_event.set()
+                    step_index = shared_state["steps"]
+                    reached_limit = True
+                else:
+                    shared_state["steps"] += 1
+                    step_index = shared_state["steps"]
+                    reached_limit = shared_state["steps"] >= max_steps
+                    if reached_limit:
+                        stop_event.set()
+            info_dict = info if isinstance(info, dict) else {}
+            reward_components = {}
+            if policy_result.reward_components is not None:
+                reward_components = {
+                    name: float(value.mean().item())
+                    for name, value in policy_result.reward_components.items()
+                }
+            raw_components = {}
+            if policy_result.raw_reward_components is not None:
+                raw_components = {
+                    name: float(value.mean().item())
+                    for name, value in policy_result.raw_reward_components.items()
+                }
+            self_state_list: List[float] = []
+            if next_self_state_vec.numel() > 0:
+                self_state_list = [float(x) for x in next_self_state_vec.squeeze(0).tolist()]
+            should_log = log_interval > 0 and step_index % log_interval == 0
+            achievements = info_dict.get("achievements") if isinstance(info_dict, dict) else None
+            achievements_count = len(achievements) if isinstance(achievements, dict) else 0
+            metrics_queue.put(
+                {
+                    "kind": "step",
+                    "worker": worker_id,
+                    "step": step_index,
+                    "episode": episode_id,
+                    "episode_steps": next_episode_steps,
+                    "intrinsic": float(policy_result.intrinsic_reward.mean().item()),
+                    "novelty": float(policy_result.novelty.mean().item()),
+                    "entropy": float(policy_result.observation_entropy.mean().item()),
+                    "env_reward": float(env_reward),
+                    "reward_components": reward_components,
+                    "raw_reward_components": raw_components,
+                    "self_state": self_state_list,
+                    "info": info_dict,
+                    "log": should_log,
+                    "done": terminated or truncated or reached_limit,
+                    "achievements_count": achievements_count,
+                }
+            )
+            done = terminated or truncated or reached_limit
+            if done and episode_frames and len(episode_frames) > 1:
+                try:
+                    video_array = np.stack(episode_frames, axis=0)
+                except ValueError:
+                    video_array = None
+                if video_array is not None:
+                    metrics_queue.put(
+                        {
+                            "kind": "video",
+                            "worker": worker_id,
+                            "step": step_index,
+                            "episode": episode_id,
+                            "frames": video_array,
+                            "info": info_dict,
+                            "truncated": reached_limit and not terminated and not truncated,
+                        }
+                    )
+            if done:
+                if shared_state["steps"] >= max_steps:
+                    break
+                observation = env.reset()
+                frame = observation
+                observation_tensor = _preprocess_frame(
+                    frame, config.encoder.observation_shape, runtime_device
+                )
+                episode_steps = 0
+                with steps_lock:
+                    shared_state["episodes"] += 1
+                    episode_id = shared_state["episodes"]
+                episode_frames = [_frame_to_chw(frame)]
+                self_state_vec = _compute_self_state(
+                    info=None,
+                    step_count=episode_steps,
+                    horizon=max_steps,
+                    state_dim=config.self_state_dim,
+                ).unsqueeze(0).to(runtime_device)
+                continue
+            observation_tensor = next_tensor
+            self_state_vec = next_self_state_vec
+            episode_steps = next_episode_steps
+    finally:
+        env.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SC-GWT training harness (Crafter integration)")
     parser.add_argument(
@@ -115,6 +274,12 @@ def main() -> None:
         default=50,
         help="How frequently to print intrinsic reward diagnostics.",
     )
+    parser.add_argument(
+        "--actor-workers",
+        type=int,
+        default=2,
+        help="Number of parallel actor threads to use for experience collection.",
+    )
     args = parser.parse_args()
 
     raw_cfg = OmegaConf.load(args.config)
@@ -135,163 +300,133 @@ def main() -> None:
     )
 
     loop = TrainingLoop(config)
-    env = crafter.Env()
-    total_steps = 0
-    episode = 0
-    episode_steps = 0
-    episode_horizon = args.max_steps
+    num_workers = max(1, args.actor_workers)
+    stop_event = threading.Event()
+    steps_lock = threading.Lock()
+    policy_lock = threading.Lock()
+    shared_state: Dict[str, int] = {"steps": 0, "episodes": 0}
+    metrics_queue: Queue = Queue()
 
-    observation = env.reset()
-    frame = observation
-    observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape, runtime_device)
-    self_state_vec = _compute_self_state(
-        info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
-    ).unsqueeze(0).to(runtime_device)
-    episode_frames = [_frame_to_chw(frame)]
+    actor_threads = []
+    for worker_id in range(num_workers):
+        worker_seed = args.seed + worker_id
+        thread = threading.Thread(
+            target=_actor_loop,
+            args=(
+                worker_id,
+                loop,
+                config,
+                runtime_device,
+                args.max_steps,
+                args.log_interval,
+                steps_lock,
+                policy_lock,
+                shared_state,
+                stop_event,
+                metrics_queue,
+                worker_seed,
+            ),
+            daemon=True,
+        )
+        thread.start()
+        actor_threads.append(thread)
 
+    latest_training_loss: float | None = None
     try:
-        while total_steps < args.max_steps:
-            with torch.no_grad():
-                policy_result = loop.step(
-                    observation_tensor,
-                    self_state=self_state_vec,
-                    train=False,
-                )
-            env_action = _select_env_action(policy_result.action, env.action_space.n)
-            next_observation, env_reward, terminated, info = env.step(env_action)
-            truncated = False
-            next_tensor = _preprocess_frame(next_observation, config.encoder.observation_shape, runtime_device)
-            training_result = loop.step(
-                observation_tensor,
-                action=policy_result.action,
-                next_observation=next_tensor,
-                self_state=self_state_vec,
-                train=True,
-            )
-            episode_frames.append(_frame_to_chw(next_observation))
-
-            next_total_steps = total_steps + 1
-            next_episode_steps = episode_steps + 1
-            next_self_state_vec = _compute_self_state(
-                info,
-                next_episode_steps,
-                episode_horizon,
-                config.self_state_dim,
-            ).unsqueeze(0).to(runtime_device)
-
-            step_metrics = {
-                "step/total_steps": next_total_steps,
-                "step/episode": episode,
-                "step/episode_steps": next_episode_steps,
-                "step/intrinsic_reward": float(policy_result.intrinsic_reward.mean().item()),
-                "step/observation_entropy": float(policy_result.observation_entropy.mean().item()),
-                "step/avg_slot_novelty": float(policy_result.novelty.mean().item()),
-                "step/env_reward": float(env_reward),
-            }
-            if isinstance(info, dict):
-                player_stats = ["health", "food", "drink", "energy"]
-                for stat in player_stats:
-                    if stat in info:
-                        step_metrics[f"crafter_stats/{stat}"] = float(info[stat])
-                if isinstance(info.get("achievements"), dict):
-                    step_metrics["crafter_stats/achievements_unlocked"] = len(info["achievements"])
-            if policy_result.reward_components is not None:
-                explore_tensor = policy_result.reward_components["explore"]
-                explore_value = float(explore_tensor.mean().item())
-                raw_components = policy_result.raw_reward_components or {}
-                raw_explore_value = (
-                    float(raw_components["explore"].mean().item())
-                    if "explore" in raw_components
-                    else explore_value
-                )
-                step_metrics.update(
-                    {
-                        "step/reward_competence": float(
-                            policy_result.reward_components["competence"].mean().item()
-                        ),
-                        "step/reward_empowerment": float(
-                            policy_result.reward_components["empowerment"].mean().item()
-                        ),
-                        "step/reward_safety": float(
-                            policy_result.reward_components["safety"].mean().item()
-                        ),
-                        "step/reward_explore_raw": raw_explore_value,
-                        "step/reward_explore": float(max(explore_value, 0.0)),
+        while True:
+            processed = False
+            while True:
+                try:
+                    message = metrics_queue.get_nowait()
+                except Empty:
+                    break
+                processed = True
+                if message["kind"] == "step":
+                    step_value = int(message["step"])
+                    step_metrics = {
+                        "step/total_steps": step_value,
+                        "step/episode": int(message["episode"]),
+                        "step/episode_steps": int(message["episode_steps"]),
+                        "step/intrinsic_reward": float(message["intrinsic"]),
+                        "step/observation_entropy": float(message["entropy"]),
+                        "step/avg_slot_novelty": float(message["novelty"]),
+                        "step/env_reward": float(message["env_reward"]),
                     }
-                )
-            state_names = ["health_norm", "food_norm", "energy_step", "is_sleeping"]
-            if next_self_state_vec.numel() > 0:
-                for idx in range(next_self_state_vec.shape[1]):
-                    name = state_names[idx] if idx < len(state_names) else f"feature_{idx}"
-                    step_metrics[f"self_state/{name}"] = float(next_self_state_vec[0, idx].item())
-            wandb.log(step_metrics, step=next_total_steps)
-
-            if training_result.training_metrics is not None:
-                wandb.log(training_result.training_metrics, step=next_total_steps)
-
-            if args.log_interval and next_total_steps % args.log_interval == 0:
-                intrinsic = policy_result.intrinsic_reward.mean().item()
-                novelty = policy_result.novelty.mean().item()
-                entropy = policy_result.observation_entropy.mean().item()
-                loss_str = (
-                    f"{training_result.training_loss:.4f}"
-                    if training_result.training_loss is not None
-                    else "n/a"
-                )
-                print(
-                    f"[step {next_total_steps:05d}] intrinsic={intrinsic:.4f} "
-                    f"novelty={novelty:.4f} entropy={entropy:.4f} loss={loss_str}"
-                )
-
-            observation_tensor = next_tensor
-            total_steps = next_total_steps
-            episode_steps = next_episode_steps
-            self_state_vec = next_self_state_vec
-            frame = next_observation
-
-            if terminated or truncated:
-                if episode_frames:
-                    video_array = np.stack(episode_frames, axis=0)
-                    wandb.log(
-                        {
-                            "episode/video": wandb.Video(
-                                video_array,
-                                fps=8,
-                                caption=f"Episode {episode} (info: {info})",
-                            )
-                        },
-                        step=next_total_steps,
-                    )
-                episode += 1
-                episode_steps = 0
-                if isinstance(info, dict) and isinstance(info.get("achievements"), dict):
-                    wandb.log(
-                        {"episode/final_achievements": len(info["achievements"])},
-                        step=next_total_steps,
-                    )
-                observation = env.reset()
-                frame = observation
-                observation_tensor = _preprocess_frame(frame, config.encoder.observation_shape, runtime_device)
-                episode_horizon = args.max_steps
-                self_state_vec = _compute_self_state(
-                    info=None, step_count=episode_steps, horizon=episode_horizon, state_dim=config.self_state_dim
-                ).unsqueeze(0).to(runtime_device)
-                episode_frames = [_frame_to_chw(frame)]
-                print(f"Episode {episode} reset (info: {info})")
-
+                    reward_components: Dict[str, float] = message.get("reward_components", {})  # type: ignore[arg-type]
+                    raw_components: Dict[str, float] = message.get("raw_reward_components", {})  # type: ignore[arg-type]
+                    if reward_components:
+                        step_metrics.update(
+                            {
+                                "step/reward_competence": reward_components.get("competence", 0.0),
+                                "step/reward_empowerment": reward_components.get("empowerment", 0.0),
+                                "step/reward_safety": reward_components.get("safety", 0.0),
+                            }
+                        )
+                        explore_value = reward_components.get("explore", 0.0)
+                        raw_explore_value = raw_components.get("explore", explore_value)
+                        step_metrics["step/reward_explore_raw"] = raw_explore_value
+                        step_metrics["step/reward_explore"] = max(explore_value, 0.0)
+                    info_dict: Dict[str, object] = message.get("info", {})  # type: ignore[assignment]
+                    player_stats = ["health", "food", "drink", "energy"]
+                    for stat in player_stats:
+                        value = info_dict.get(stat)
+                        if isinstance(value, (int, float)):
+                            step_metrics[f"crafter_stats/{stat}"] = float(value)
+                    achievements = info_dict.get("achievements")
+                    if isinstance(achievements, dict):
+                        step_metrics["crafter_stats/achievements_unlocked"] = len(achievements)
+                    self_state_values: List[float] = message.get("self_state", [])  # type: ignore[assignment]
+                    state_names = ["health_norm", "food_norm", "energy_step", "is_sleeping"]
+                    for idx, value in enumerate(self_state_values):
+                        name = state_names[idx] if idx < len(state_names) else f"feature_{idx}"
+                        step_metrics[f"self_state/{name}"] = float(value)
+                    wandb.log(step_metrics, step=step_value)
+                    if message.get("done") and message.get("achievements_count", 0):
+                        wandb.log(
+                            {"episode/final_achievements": int(message["achievements_count"])},
+                            step=step_value,
+                        )
+                    if message.get("log"):
+                        loss_str = (
+                            f"{latest_training_loss:.4f}" if latest_training_loss is not None else "n/a"
+                        )
+                        print(
+                            f"[worker {message['worker']} step {step_value:05d}] "
+                            f"intrinsic={step_metrics['step/intrinsic_reward']:.4f} "
+                            f"novelty={step_metrics['step/avg_slot_novelty']:.4f} "
+                            f"entropy={step_metrics['step/observation_entropy']:.4f} "
+                            f"loss={loss_str}"
+                        )
+                elif message["kind"] == "video":
+                    frames = message.get("frames")
+                    if isinstance(frames, np.ndarray) and frames.shape[0] > 1:
+                        label = "episode/video_truncated" if message.get("truncated") else "episode/video"
+                        caption = (
+                            f"Worker {message['worker']} Episode {message['episode']} (info: {message.get('info')})"
+                        )
+                        wandb.log(
+                            {label: wandb.Video(frames, fps=8, caption=caption)},
+                            step=int(message.get("step", 0)),
+                        )
+            metrics = loop._optimize()
+            if metrics:
+                with steps_lock:
+                    current_step = shared_state["steps"]
+                wandb.log(metrics, step=current_step)
+                latest_training_loss = metrics.get("train/total_loss")
+                processed = True
+            if (
+                stop_event.is_set()
+                and all(not thread.is_alive() for thread in actor_threads)
+                and metrics_queue.empty()
+            ):
+                break
+            if not processed:
+                time.sleep(0.001)
     finally:
-        if total_steps >= args.max_steps and episode_frames and len(episode_frames) > 1:
-            video_array = np.stack(episode_frames, axis=0)
-            wandb.log(
-                {
-                    "episode/video_truncated": wandb.Video(
-                        video_array,
-                        fps=8,
-                        caption=f"Episode {episode} (truncated at step limit)",
-                    )
-                },
-                step=total_steps,
-            )
+        stop_event.set()
+        for thread in actor_threads:
+            thread.join()
         wandb.finish()
 
 
