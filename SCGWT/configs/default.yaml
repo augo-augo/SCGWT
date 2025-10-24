@@ -20,7 +20,7 @@ dynamics:
 
 workspace:
   broadcast_slots: 3
-  self_bias: 1.0
+  self_bias: 1.5
   novelty_weight: 1.0
   progress_weight: 0.6
   cost_weight: 0.05
