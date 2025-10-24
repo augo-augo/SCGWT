@@ -64,7 +64,8 @@ critic:
   dropout: 0.0
 
 self_state_dim: 2
-dream_horizon: 6
+dream_chunk_size: 3
+num_dream_chunks: 2
 discount_gamma: 0.95
 gae_lambda: 0.9
 entropy_coef: 0.02

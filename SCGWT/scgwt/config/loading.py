@@ -61,7 +61,16 @@ def load_training_config(path: str | Path, overrides: Iterable[str] | None = Non
     batch_size = resolved.get("batch_size", 32)
     optimizer_lr = resolved.get("optimizer_lr", 1e-3)
     optimizer_empowerment_weight = resolved.get("optimizer_empowerment_weight", 0.1)
-    dream_horizon = resolved.get("dream_horizon", 5)
+    dream_horizon = resolved.get("dream_horizon")
+    dream_chunk_size = resolved.get("dream_chunk_size")
+    num_dream_chunks = resolved.get("num_dream_chunks")
+    if dream_chunk_size is None:
+        if dream_horizon is not None:
+            dream_chunk_size = dream_horizon
+        else:
+            dream_chunk_size = 5
+    if num_dream_chunks is None:
+        num_dream_chunks = 1
     discount_gamma = resolved.get("discount_gamma", 0.99)
     gae_lambda = resolved.get("gae_lambda", 0.95)
     entropy_coef = resolved.get("entropy_coef", 0.01)
@@ -86,6 +95,8 @@ def load_training_config(path: str | Path, overrides: Iterable[str] | None = Non
         actor=actor_cfg,
         critic=critic_cfg,
         dream_horizon=dream_horizon,
+        dream_chunk_size=dream_chunk_size,
+        num_dream_chunks=num_dream_chunks,
         discount_gamma=discount_gamma,
         gae_lambda=gae_lambda,
         entropy_coef=entropy_coef,

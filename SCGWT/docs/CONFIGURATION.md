@@ -25,7 +25,8 @@ Both files expose the same keys:
 | `optimizer_empowerment_weight` | Weighting applied to empowerment maximisation inside reconstruction and dreaming losses. |
 | `actor` | Policy-network hidden size, depth, and dropout (state/action dimensionality inferred automatically). |
 | `critic` | Value-network hidden size, depth, and dropout. |
-| `dream_horizon` | Number of imagined steps rolled out per Stable Dreaming update. |
+| `dream_chunk_size` | Length of each imagined rollout segment processed before detaching gradients. |
+| `num_dream_chunks` | Number of chunks composed to form the full imagined trajectory (effective horizon = chunk_size × num_chunks). |
 | `discount_gamma` | Discount factor used for imagined returns. |
 | `gae_lambda` | GAE smoothing factor for advantage estimates. |
 | `entropy_coef` | Entropy regularisation weight added to the actor loss. |

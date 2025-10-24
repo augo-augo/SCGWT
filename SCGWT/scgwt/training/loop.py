@@ -148,7 +148,9 @@ class TrainingConfig:
         default_factory=lambda: ActorConfig(latent_dim=0, action_dim=0)
     )
     critic: CriticConfig = field(default_factory=lambda: CriticConfig(latent_dim=0))
-    dream_horizon: int = 5
+    dream_horizon: int | None = None
+    dream_chunk_size: int = 5
+    num_dream_chunks: int = 1
     discount_gamma: float = 0.99
     gae_lambda: float = 0.95
     entropy_coef: float = 0.01
@@ -156,6 +158,15 @@ class TrainingConfig:
     world_model_coef: float = 1.0
     self_state_dim: int = 0
     device: str = "cpu"
+
+    @property
+    def effective_dream_horizon(self) -> int:
+        chunk_product = self.dream_chunk_size * self.num_dream_chunks
+        if self.dream_horizon is not None:
+            if chunk_product != self.dream_horizon:
+                return chunk_product
+            return self.dream_horizon
+        return chunk_product
 
 
 class TrainingLoop:
@@ -632,14 +643,17 @@ class TrainingLoop:
     def _stable_dreaming(
         self, latents: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-        current_latents = latents
-        memory_context = self._get_memory_context(current_latents["z_self"])
-        actor_losses = []
-        critic_losses = []
-        entropies = []
-        rewards = []
-        values = []
-        log_probs = []
+        chunk_size = max(1, self.config.dream_chunk_size)
+        num_chunks = max(1, self.config.num_dream_chunks)
+
+        initial_latents = {key: value.detach() for key, value in latents.items()}
+        memory_context = self._get_memory_context(initial_latents["z_self"]).detach()
+        current_latents = initial_latents
+
+        entropies: list[torch.Tensor] = []
+        rewards: list[torch.Tensor] = []
+        values: list[torch.Tensor] = []
+        log_probs: list[torch.Tensor] = []
         competence_terms = []
         empowerment_terms = []
         safety_terms = []
@@ -648,62 +662,61 @@ class TrainingLoop:
         raw_explore_terms = []
 
         dream_actions = []
-        for step in range(self.config.dream_horizon):
-            broadcast, _, _, _, _ = self._route_slots(
-                current_latents["slots"],
-                current_latents["z_self"],
-                torch.zeros(
-                    current_latents["slots"].size(0),
-                    self.config.dynamics.action_dim,
-                    device=self.device,
-                ),
-                None,
-                update_stats=False,
-            )
-            features = self._assemble_features(
-                current_latents["z_self"], broadcast, memory_context
-            )
-            action_dist = self._call_with_fallback("actor", features)
-            dream_action = action_dist.rsample()
-            dream_log_prob = action_dist.log_prob(dream_action)
-            dream_entropy = action_dist.entropy()
-            dream_actions.append(dream_action)
+        for _ in range(num_chunks):
+            for _ in range(chunk_size):
+                broadcast, _, _, _, _ = self._route_slots(
+                    current_latents["slots"],
+                    current_latents["z_self"],
+                    torch.zeros(
+                        current_latents["slots"].size(0),
+                        self.config.dynamics.action_dim,
+                        device=self.device,
+                    ),
+                    None,
+                    update_stats=False,
+                )
+                features = self._assemble_features(
+                    current_latents["z_self"], broadcast, memory_context
+                )
+                action_dist = self._call_with_fallback("actor", features)
+                dream_action = action_dist.rsample()
+                dream_log_prob = action_dist.log_prob(dream_action)
+                dream_entropy = action_dist.entropy()
+                dream_actions.append(dream_action)
 
-            latent_state = broadcast.mean(dim=1)
-            predictions = self.world_model.predict_next_latents(latent_state, dream_action)
-            decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
-            novelty = self.reward.get_novelty(decoded)
-            predicted_obs = decoded[0].rsample()
-            observation_entropy = estimate_observation_entropy(predicted_obs)
-            dream_reward, norm_components, raw_components = self.reward.get_intrinsic_reward(
-                novelty,
-                observation_entropy,
-                dream_action,
-                latent_state,
-                return_components=True,
-            )
-            dream_comp = norm_components["competence"]
-            dream_emp = norm_components["empowerment"]
-            dream_safe = norm_components["safety"]
-            dream_explore = norm_components["explore"]
-            raw_explore = raw_components["explore"]
-            competence_terms.append(dream_comp.detach().mean())
-            empowerment_terms.append(dream_emp.detach().mean())
-            safety_terms.append(dream_safe.detach().mean())
-            intrinsic_terms.append(dream_reward.detach().mean())
-            explore_terms.append(dream_explore.detach().mean())
-            raw_explore_terms.append(raw_explore.detach().mean())
+                latent_state = broadcast.mean(dim=1)
+                predictions = self.world_model.predict_next_latents(latent_state, dream_action)
+                decoded = self.world_model.decode_predictions(predictions, use_frozen=False)
+                novelty = self.reward.get_novelty(decoded)
+                predicted_obs = decoded[0].rsample()
+                observation_entropy = estimate_observation_entropy(predicted_obs)
+                dream_reward, norm_components, raw_components = self.reward.get_intrinsic_reward(
+                    novelty,
+                    observation_entropy,
+                    dream_action,
+                    latent_state,
+                    return_components=True,
+                )
+                competence_terms.append(norm_components["competence"].detach().mean())
+                empowerment_terms.append(norm_components["empowerment"].detach().mean())
+                safety_terms.append(norm_components["safety"].detach().mean())
+                intrinsic_terms.append(dream_reward.detach().mean())
+                explore_terms.append(norm_components["explore"].detach().mean())
+                raw_explore_terms.append(raw_components["explore"].detach().mean())
 
-            normalized_reward = self.reward_normalizer(dream_reward)
+                normalized_reward = self.reward_normalizer(dream_reward)
 
-            critic_value = self._call_with_fallback("critic", features)
-            values.append(critic_value)
-            rewards.append(normalized_reward)
-            log_probs.append(dream_log_prob)
-            entropies.append(dream_entropy)
+                critic_value = self._call_with_fallback("critic", features)
+                values.append(critic_value)
+                rewards.append(normalized_reward)
+                log_probs.append(dream_log_prob)
+                entropies.append(dream_entropy)
 
-            current_latents = self._call_with_fallback("world_model", predicted_obs)
-            memory_context = self._get_memory_context(current_latents["z_self"])
+                current_latents = self._call_with_fallback("world_model", predicted_obs)
+                memory_context = self._get_memory_context(current_latents["z_self"])
+
+            current_latents = {key: value.detach() for key, value in current_latents.items()}
+            memory_context = memory_context.detach()
 
         final_broadcast, _, _, _, _ = self._route_slots(
             current_latents["slots"],
@@ -719,7 +732,7 @@ class TrainingLoop:
         final_features = self._assemble_features(
             current_latents["z_self"], final_broadcast, memory_context
         )
-        next_value = self._call_with_fallback("critic", final_features)
+        next_value = self._call_with_fallback("critic", final_features).detach()
 
         rewards_tensor = torch.stack(rewards)
         values_tensor = torch.stack(values)
@@ -737,9 +750,9 @@ class TrainingLoop:
             self.config.critic_coef * 0.5 * (returns.detach() - values_tensor).pow(2).mean()
         )
 
-        empowerment_term = self.empowerment(
-            dream_actions[-1].detach(), final_broadcast.mean(dim=1).detach()
-        ).mean()
+        final_action = dream_actions[-1].detach()
+        final_latent_state = final_broadcast.mean(dim=1).detach()
+        empowerment_term = self.empowerment(final_action, final_latent_state).mean()
         dream_loss = -self.optimizer_empowerment_weight * empowerment_term
 
         intrinsic_stack = torch.stack(intrinsic_terms)
