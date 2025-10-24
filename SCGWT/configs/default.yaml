@@ -37,7 +37,7 @@ reward:
   lambda_comp: 1.0
   lambda_emp: 0.25
   lambda_safety: 0.15
-  lambda_explore: 1.6
+  lambda_explore: 2.0
 
 empowerment:
   latent_dim: 64
@@ -70,7 +70,7 @@ dream_chunk_size: 5
 num_dream_chunks: 2
 discount_gamma: 0.99
 gae_lambda: 0.95
-entropy_coef: 0.02
+entropy_coef: 0.03
 critic_coef: 0.5
 world_model_coef: 1.0
 
