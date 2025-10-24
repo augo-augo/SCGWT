@@ -81,32 +81,38 @@ The agent is trained in a two-phase loop defined in `TrainingLoop`.
 
 ---
 
-## 4. Experimental Validation & Results
+4. Experimental Validation & Preliminary Results
 
-The agent was trained in the Crafter environment, with metrics logged via Weights & Biases. The results from this run validate the stability and effectiveness of the architecture.
+The agent was trained in the Crafter environment, with metrics logged via Weights & Biases. The initial results presented here cover approximately the first 30k steps of training and serve as a preliminary validation of the architecture's stability and the function of key mechanisms. Note: Comprehensive ablation studies isolating the contribution of each component have not yet been performed, and the presented run terminated early relative to longer-term learning goals.
 
-**Result 1: Stable Loss Convergence**
+Result 1: Initial Loss Convergence
 
-The primary training losses (`train/total_loss`, `train/world_model_loss`) show clear and stable convergence, trending from ~0 to below -15,000 over 250k steps. This indicates that the world model is successfully learning to predict its environment and that the optimization process is stable. The `train/dream_loss_empowerment` also trends downward, showing the policy is successfully optimizing for its intrinsic drives within its dreams.
+The primary training losses (train/total_loss, train/world_model_loss) show rapid initial convergence within the first 5k steps, stabilizing thereafter. This indicates the world model is quickly learning basic environmental dynamics and the optimization process is stable in the early phase. The train/dream_loss_empowerment also trends generally downward, suggesting the policy is successfully optimizing for intrinsic drives within its dreams.
 
 ![Training Loss Curves](./SCGWT/data/train.PNG)
 
-**Result 2: Empirical Solution to "Dark Room" Pathology**
+Result 2: Qualitative Validation of "Dark Room" Prevention
 
-The agent's **Safety** mechanism functions as designed. The log of `step/observation_entropy` shows the agent successfully maintains a high sensory entropy, avoiding low-information states. The corresponding `step/reward_safety` log shows the agent receiving corrective penalties (sharp dips) when it does encounter low-entropy states, empirically validating the solution to the "dark room" pathology.
+The agent's Safety mechanism appears to function as intended during environment interaction. The log of step/observation_entropy generally remains varied, while the corresponding step/reward_safety log shows corrective negative penalties during periods of lower entropy. This provides qualitative evidence for the successful avoidance of low-information states.
 
 ![Step Reward Curves](./SCGWT/data/step.PNG)
 
-**Result 3: Healthy Intrinsic Dream Dynamics**
+Result 3: Plausible Intrinsic Dream Dynamics
 
-The agent's internal "dreams" reflect a healthy learning process. The `dream/safety` log shows the agent initially exploring low-entropy states in its imagination (the large dip from 0 to -1.5) and then learning to avoid them, stabilizing its dreamed reward near 0. This demonstrates the power of **Stable Dreaming** to solve pathologies offline. The `dream/policy_entropy` shows a healthy exploration–exploitation curve, rising and then slowly declining as the policy learns.
+The agent's internal "dreams" reflect plausible learning dynamics. The dream/safety log shows the agent imagining low-entropy states early on (dip around 25k steps) and subsequently receiving negative rewards, leading to avoidance of such states in later dreams. This highlights the potential for Stable Dreaming to address pathologies offline. The dream/policy_entropy exhibits an explore-exploit dynamic, initially increasing and then decreasing as the policy presumably converges on rewarding imagined strategies.
 
 ![Dream Metric Curves](./SCGWT/data/dream.PNG)
 
----
+5. Conclusion & Future Work
 
-## 5. Conclusion & Future Work
+The SC-GWT v2.0 prototype demonstrates initial promise. Preliminary results suggest that a "hardened" multi-component intrinsic reward, combined with a self-centric global workspace architecture and stable dreaming, can produce a learning agent that exhibits stable training dynamics and avoids the classic "dark room" pathology in its behavior and imagination.
 
-The SC-GWT v2.0 prototype successfully demonstrates that a "hardened" multi-component intrinsic reward, when combined with a self-centric global workspace architecture and stable dreaming, can produce a robust, autonomous agent that avoids common wireheading pathologies.
+However, these results are early, and significant future work is planned:
 
-The next critical phase for this research is to move from a single-agent physical environment to a multi-agent **social world**. This will provide an unbounded source of chaos and novelty, forcing the agent's world model to evolve. To be "competent" and "empowered" in a social world, an agent will be forced to model *other agents* as intentional beings, providing a testbed for the emergent concepts of "self" versus "other" and a potential path toward an artificial **Theory of Mind**.
+    Ablation Studies: Rigorously evaluate the necessity and contribution of each intrinsic reward component (Competence, Empowerment, Safety, Explore) and architectural feature (Episodic Memory, GW Bias) through systematic ablation experiments.
+
+    Long-Horizon Reasoning (Markovian Thinking): Implement and evaluate the integration of a Markovian Thinking-style chunking mechanism into the _stable_dreaming loop. This aims to enable efficient learning of strategies requiring much longer planning horizons than currently feasible, overcoming memory bottlenecks.
+
+    Social Learning Environment: Transition the agent to a lightweight multi-agent environment (e.g., based on MARL grid worlds). This will test the hypothesis that social interaction provides the necessary stimulus for the emergence of more complex behaviors, communication, and potentially a grounded understanding of self vs. other, driven purely by the agent's intrinsic motivations. We plan to investigate whether communication protocols emerge naturally as optimal strategies for maximizing Competence and Empowerment in a social context.
+
+Further research will focus on scaling these methods and rigorously testing the emergence of complex, goal-directed behavior from these foundational intrinsic drives.
